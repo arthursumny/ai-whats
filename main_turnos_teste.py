@@ -192,7 +192,6 @@ class WhatsAppGeminiBot:
         load_dotenv(override=True)
         self.whapi_api_key = os.getenv('WHAPI_API_KEY')
         self.gemini_api_key = os.getenv('GEMINI_API_KEY')
-        self.palavra_chave = os.getenv('PALAVRA_CHAVE').lower()
         self.gemini_model = os.getenv('GEMINI_MODEL')
         self.gemini_context = os.getenv('GEMINI_CONTEXT', '').replace('\\n', '\n')
         
