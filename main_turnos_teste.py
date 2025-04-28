@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 pdf_files = [
     genai.upload_file('zombicide_ptbr.pdf'),
-    genai.upload_file('zombicide_en.pdf')
 ]
 
 class WhatsAppGeminiBot:
