@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 pdf_files = [
-    genai.upload_file('zombicide_ptbr.pdf')
+    genai.upload_file('manual_zombicide_invaders.txt')
 ]
 
 class WhatsAppGeminiBot:
