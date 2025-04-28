@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 pdf_files = [
-    genai.upload_file('zombicide_ptbr.pdf'),
+    genai.upload_file('zombicide_ptbr.pdf')
 ]
 
 class WhatsAppGeminiBot:
@@ -295,18 +295,23 @@ class WhatsAppGeminiBot:
 
     def process_whatsapp_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Filtra mensagens conforme regras e prepara para processamento"""
-        if (message.get('direction') == 'outgoing' or message.get('type') in ['image', 'video', 'document', 'audio', 'sticker']):
+        # Ignora mensagens enviadas pelo próprio bot ou sem texto válido
+        if (message.get('direction') == 'outgoing' or 
+            message.get('type') not in ['text', None] or  # Filtra apenas mensagens de texto
+            not message.get('text', {}).get('body')):
             return None
-        
+
         # Verifica se a mensagem já foi processada (banco de dados)
         message_id = message.get('id')
         if not message_id or self._message_exists(message_id):
             return None
 
         chat_id = message.get('chat_id')
-        texto_dict = message.get('text', {})
-        texto_original = texto_dict.get('body', '').strip()
+        texto_original = message.get('text', {}).get('body', '').strip()
 
+        # Ignora mensagens vazias ou do próprio bot (verifica por prefixos comuns)
+        if not texto_original or texto_original.startswith(('*BrainEater Guide:*')):
+            return None
 
         self._save_message(
             message_id=message_id,
@@ -316,9 +321,8 @@ class WhatsAppGeminiBot:
         return {
             'chat_id': chat_id,
             'texto_original': texto_original,
-            'message_id': message_id  # Importante para o reply
+            'message_id': message_id
         }
-
     def generate_gemini_response(self, prompt: str, chat_id: str, pdf_paths: list = None) -> str:
         """Gera resposta usando Gemini com contexto da conversa"""
         try:

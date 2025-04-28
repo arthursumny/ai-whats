@@ -16,16 +16,22 @@ def handle_webhook():
 
         messages = data.get('messages', [])
         for message in messages:
+            # Filtra mensagens enviadas pelo bot (direção "outgoing" ou sem 'text')
+            if message.get('direction') == 'outgoing' or not message.get('text'):
+                continue
+
             if processed := bot.process_whatsapp_message(message):
                 resposta = bot.generate_gemini_response(
                     processed['texto_original'],
                     processed['chat_id']
                 )
-                bot.send_whatsapp_message(
-                    processed['chat_id'],
-                    resposta,
-                    processed['message_id']
-                )
+                # Evita responder a si mesmo (opcional)
+                if not resposta.startswith(('*BrainEater Guide:*', '⚠️')):
+                    bot.send_whatsapp_message(
+                        processed['chat_id'],
+                        resposta,
+                        processed['message_id']
+                    )
 
         return jsonify({'status': 'success'}), 200
     except Exception as e:
