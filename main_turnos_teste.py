@@ -54,7 +54,7 @@ class WhatsAppGeminiBot:
                 user=os.getenv('SUPABASE_USER'),
                 password=os.getenv('SUPABASE_PASSWORD'),
                 host=os.getenv('SUPABASE_HOST'),
-                port=os.getenv('SUPABASE_PORT', '5432')
+                port=os.getenv('SUPABASE_PORT')
             )
         except OperationalError as e:
             logger.error(f"Erro ao conectar ao Supabase: {e}")
