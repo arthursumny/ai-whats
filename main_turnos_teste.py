@@ -296,7 +296,7 @@ class WhatsAppGeminiBot:
 
     def process_whatsapp_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Filtra mensagens conforme regras e prepara para processamento"""
-        if message.get('type') in ['image', 'video', 'document', 'audio', 'sticker']:
+        if (message.get('direction') == 'outgoing' or message.get('type') in ['image', 'video', 'document', 'audio', 'sticker']):
             return None
         
         # Verifica se a mensagem já foi processada (banco de dados)
