@@ -8,6 +8,9 @@ import logging
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 import sqlite3
+import psycopg2
+from psycopg2 import sql, OperationalError
+from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
 
 # Carrega variáveis do .env
@@ -37,154 +40,128 @@ class WhatsAppGeminiBot:
         self.processed_message_ids = set()  # Armazena IDs de mensagens já processadas
         self.conversation_contexts = {}  # Armazena o contexto das conversas por chat_id
         self.inactivity_timeout = 600  # 10 minutos em segundos
-        self._start_background_cleaner()
         
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
         
         self.setup_apis()
 
-    def _start_background_cleaner(self):
-        """Inicia thread para limpar conversas inativas"""
-        import threading
-        def cleaner_loop():
-            while True:
-                self._clean_old_conversations()
-                time.sleep(60)  # Verifica a cada minuto
-
-        cleaner_thread = threading.Thread(target=cleaner_loop, daemon=True)
-        cleaner_thread.start()
+    def _get_db_connection(self):
+        """Estabelece conexão com o Supabase"""
+        try:
+            return psycopg2.connect(
+                dbname=os.getenv('SUPABASE_DB_NAME'),
+                user=os.getenv('SUPABASE_USER'),
+                password=os.getenv('SUPABASE_PASSWORD'),
+                host=os.getenv('SUPABASE_HOST'),
+                port=os.getenv('SUPABASE_PORT', '5432')
+            )
+        except OperationalError as e:
+            logger.error(f"Erro ao conectar ao Supabase: {e}")
+            raise
 
     def _init_db(self):
-        """Cria as tabelas se não existirem"""
-        with sqlite3.connect(self.db_file) as conn:
-            cursor = conn.cursor()
-
-            # Tabela de mensagens processadas (original)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS processed_messages (
-                    id TEXT PRIMARY KEY,
-                    chat_id TEXT NOT NULL,
-                    text_content TEXT,
-                    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-
-            # Tabela modificada para histórico de conversas (nova estrutura)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS conversation_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id TEXT NOT NULL,
-                    message_text TEXT NOT NULL,
-                    is_bot BOOLEAN NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (chat_id, timestamp)
-                )
-            """)
-
-            # Cria índice para consultas por chat_id
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_conversation_history_chat_id 
-                ON conversation_history (chat_id)
-            """)
-
-            conn.commit()
+        """Verifica se as tabelas existem (já criamos manualmente no Supabase)"""
+        pass  # As tabelas já foram criadas manualmente
 
     def _message_exists(self, message_id: str) -> bool:
         """Verifica se a mensagem já foi processada"""
-        with sqlite3.connect(self.db_file) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT 1 FROM processed_messages WHERE id = ?", 
-                (message_id,)
-            )
-            return cursor.fetchone() is not None
+        try:
+            with self._get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT 1 FROM processed_messages WHERE id = %s", 
+                        (message_id,)
+                    )
+                    return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Erro ao verificar mensagem: {e}")
+            return True  # Em caso de erro, assume que já foi processada
 
     def _save_message(self, message_id: str, chat_id: str, text: str):
         """Armazena a mensagem no banco de dados"""
-        with sqlite3.connect(self.db_file) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """INSERT INTO processed_messages 
-                   (id, chat_id, text_content) 
-                   VALUES (?, ?, ?)""",
-                (message_id, chat_id, text)
-            )
-            conn.commit()
+        try:
+            with self._get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """INSERT INTO processed_messages 
+                           (id, chat_id, text_content) 
+                           VALUES (%s, %s, %s)
+                           ON CONFLICT (id) DO NOTHING""",
+                        (message_id, chat_id, text)
+                    )
+                    conn.commit()
+        except Exception as e:
+            logger.error(f"Erro ao salvar mensagem: {e}")
 
     def _save_conversation_history(self, chat_id: str, message_text: str, is_bot: bool):
-        """Armazena o histórico da conversa com tratamento de timestamps duplicados"""
-        max_attempts = 3
-        attempt = 0
-
-        while attempt < max_attempts:
-            try:
-                with sqlite3.connect(self.db_file) as conn:
-                    cursor = conn.cursor()
-
-                    # Usamos strftime para garantir precisão de milissegundos
-                    cursor.execute("""
-                        INSERT INTO conversation_history 
-                        (chat_id, message_text, is_bot, timestamp)
-                        VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
-                    """, (chat_id, message_text, is_bot))
-
+        """Armazena o histórico da conversa"""
+        try:
+            with self._get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """INSERT INTO conversation_history 
+                           (chat_id, message_text, is_bot) 
+                           VALUES (%s, %s, %s)""",
+                        (chat_id, message_text, is_bot)
+                    )
                     conn.commit()
-                    return
-
-            except sqlite3.IntegrityError as e:
-                if "UNIQUE" in str(e):
-                    attempt += 1
-                    if attempt < max_attempts:
-                        # Pequeno delay para garantir timestamp único
-                        time.sleep(0.1)
-                        continue
-                logger.error(f"Erro ao salvar histórico: {e}")
-                return
-            except Exception as e:
-                logger.error(f"Erro inesperado ao salvar histórico: {e}")
-                return
+        except Exception as e:
+            logger.error(f"Erro ao salvar histórico: {e}")
 
     def _get_conversation_history(self, chat_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Obtém o histórico de conversa para um chat_id específico"""
-        with sqlite3.connect(self.db_file) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """SELECT message_text, is_bot, timestamp 
-                   FROM conversation_history 
-                   WHERE chat_id = ? 
-                   ORDER BY timestamp DESC 
-                   LIMIT ?""",
-                (chat_id, limit)
-            )
-            rows = cursor.fetchall()
-            
-            return [{
-                'text': row[0],
-                'is_bot': bool(row[1]),
-                'timestamp': row[2]
-            } for row in rows]
+        try:
+            with self._get_db_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute(
+                        """SELECT message_text, is_bot, timestamp 
+                           FROM conversation_history 
+                           WHERE chat_id = %s 
+                           ORDER BY timestamp DESC 
+                           LIMIT %s""",
+                        (chat_id, limit)
+                    )
+                    return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Erro ao obter histórico: {e}")
+            return []
 
     def _clean_old_conversations(self):
-        """Limpa conversas inativas por mais de 10 minutos"""
-        current_time = datetime.now()
-        inactive_chats = []
-        
-        for chat_id, context_data in list(self.conversation_contexts.items()):
-            last_activity = context_data['last_activity']
-            if (current_time - last_activity).total_seconds() > self.inactivity_timeout:
-                inactive_chats.append(chat_id)
-                # Envia mensagem informando que o contexto foi limpo
-                self.send_whatsapp_message(
-                    chat_id=chat_id,
-                    text="O contexto desta conversa foi encerrado devido a inatividade. Se precisar de ajuda, envie uma nova mensagem.",
-                    reply_to=None
-                )
-                logger.info(f"Contexto limpo para chat_id {chat_id} por inatividade")
-        
-        # Remove os chats inativos
-        for chat_id in inactive_chats:
-            del self.conversation_contexts[chat_id]
+        """Limpa conversas inativas por mais de 10 minutos (memória + banco)"""
+        try:
+            # Limpeza da memória
+            current_time = datetime.now()
+            inactive_chats = []
+
+            for chat_id, context_data in list(self.conversation_contexts.items()):
+                last_activity = context_data['last_activity']
+                if (current_time - last_activity).total_seconds() > self.inactivity_timeout:
+                    inactive_chats.append(chat_id)
+                    # Envia mensagem de encerramento
+                    self.send_whatsapp_message(
+                        chat_id=chat_id,
+                        text="Contexto encerrado por inatividade. Envie nova mensagem.",
+                        reply_to=None
+                    )
+
+            # Remove da memória
+            for chat_id in inactive_chats:
+                del self.conversation_contexts[chat_id]
+
+            # Limpeza do banco de dados
+            with self._get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Deleta histórico com mais de 10 minutos
+                    cursor.execute("""
+                        DELETE FROM conversation_history 
+                        WHERE timestamp < NOW() - INTERVAL '10 minutes'
+                    """)
+                    conn.commit()
+                    logger.info(f"Limpeza BD: {cursor.rowcount} registros removidos")
+
+        except Exception as e:
+            logger.error(f"Erro na limpeza: {e}")
 
     def reload_env(self):
         """Recarrega variáveis do .env"""
@@ -244,29 +221,29 @@ class WhatsAppGeminiBot:
         self._save_conversation_history(chat_id, bot_response, True)
 
     def build_context_prompt(self, chat_id: str, current_prompt: str) -> str:
-        """Constrói o prompt com o contexto da conversa"""
-        if chat_id not in self.conversation_contexts or not self.conversation_contexts[chat_id]['messages']:
+        """Constrói o prompt usando o histórico do banco de dados"""
+        try:
+            # Busca histórico do banco
+            history = self._get_conversation_history(chat_id, limit=10)
+
+            if not history:
+                return current_prompt
+
+            # Formata o contexto
+            context_str = "\n".join(
+                f"{'Usuário' if not row['is_bot'] else 'Assistente'}: {row['message_text']}" 
+                for row in reversed(history)  # Inverte para ordem cronológica correta
+            )
+        
+            return (
+                f"Essas são as mensagens anteriores, utilize como contexto para continuar essa conversa, se necessário:\n"
+                f"{context_str}\n\n"
+                f"Continue a conversa respondendo a esta mensagem:\n"
+                f"Usuário: {current_prompt}"
+            )
+        except Exception as e:
+            logger.error(f"Erro ao construir contexto: {e}")
             return current_prompt
-        
-        context_messages = self.conversation_contexts[chat_id]['messages']
-        
-        # Limita o contexto para evitar prompt muito longo
-        if len(context_messages) > 10:  # Mantém apenas as últimas 5 interações (10 mensagens)
-            context_messages = context_messages[-10:]
-            self.conversation_contexts[chat_id]['messages'] = context_messages
-        
-        # Formata o contexto
-        context_str = "\n".join(
-            f"{msg['role'].capitalize()}: {msg['content']}" 
-            for msg in context_messages
-        )
-        
-        return (
-            f"Essas são as mensagens anteriores, utilize como contexto para continuar essa conversa:\n"
-            f"{context_str}\n\n"
-            f"Continue a conversa respondendo a esta mensagem:\n"
-            f"Usuário: {current_prompt}"
-        )
     
     def test_whapi_connection(self):
         """Testa a conexão com a API Whapi"""
