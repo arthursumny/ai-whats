@@ -16,29 +16,33 @@ def handle_webhook():
         if not data:
             return jsonify({'status': 'Dados inválidos'}), 400
 
-        current_time = datetime.now()  # Obtém o timestamp atual uma única vez
+        current_time = datetime.now()
 
-        # Verificação de limpeza otimizada
-        if not hasattr(bot, 'last_cleanup') or (current_time - bot.last_cleanup).total_seconds() > 600:
-            bot._clean_old_conversations(current_time)  # Passa o timestamp atual
-            bot.last_cleanup = current_time
+        # Verificação de limpeza corrigida
+        if not hasattr(bot, 'last_cleanup'):
+            bot.last_cleanup = current_time  # Inicializa como datetime
+            
+        if (current_time - bot.last_cleanup).total_seconds() > 600:
+            bot._clean_old_conversations(current_time)
+            bot.last_cleanup = current_time  # Mantém como datetime
 
         messages = data.get('messages', [])
         for message in messages:
             chat_id = message.get('chat_id')
             
-            # Verificação de inatividade por chat específico
             if chat_id in bot.conversation_contexts:
-                inactivity_period = (current_time - bot.conversation_contexts[chat_id]['last_activity']).total_seconds()
-                if inactivity_period > bot.inactivity_timeout:
+                last_activity = bot.conversation_contexts[chat_id]['last_activity']
+                if isinstance(last_activity, float):  # Conversão de segurança
+                    last_activity = datetime.fromtimestamp(last_activity)
+                
+                if (current_time - last_activity).total_seconds() > bot.inactivity_timeout:
                     bot.send_whatsapp_message(
                         chat_id=chat_id,
-                        text="O contexto desta conversa foi encerrado devido a inatividade. Envie uma nova mensagem para continuar.",
+                        text="Contexto encerrado por inatividade",
                         reply_to=None
                     )
                     del bot.conversation_contexts[chat_id]
 
-            # Filtra mensagens inválidas
             if message.get('direction') == 'outgoing' or not message.get('text'):
                 continue
 
