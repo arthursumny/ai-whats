@@ -44,7 +44,7 @@ class WhatsAppGeminiBot:
             raise ValueError("Chaves API não configuradas no .env")
         
         self.setup_apis()
-        self.last_cleanup = time.time()
+        self.last_cleanup = datetime.now()
 
     def _get_db_connection(self):
         """Estabelece conexão com o Supabase"""
