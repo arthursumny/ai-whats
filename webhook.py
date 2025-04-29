@@ -37,7 +37,7 @@ def handle_webhook():
                     del bot.conversation_contexts[chat_id]
 
             if str(message.get('from_me')).lower() == 'true' or not message.get('text'):
-                logging.info(f"Ignorando mensagem própria: {message.get('id')}")
+                logging.info(f"Ignorando mensagem própria 1: {message.get('id')}")
                 continue
 
             if processed := bot.process_whatsapp_message(message):
@@ -46,7 +46,7 @@ def handle_webhook():
                     processed['chat_id']
                 )
                 
-                if not resposta.startswith(('*Revora AI:*', '⚠️')):
+                if not resposta.startswith(('*Revora AI:*')):
                     bot.send_whatsapp_message(
                         processed['chat_id'],
                         resposta,
@@ -70,6 +70,7 @@ def healthcheck():
         if not hasattr(bot, 'last_cleanup') or (now - bot.last_cleanup).total_seconds() > 600:
             bot._clean_old_conversations(now)
             bot.last_cleanup = now
+            logging.info("Limpeza de conversas antigas realizada.")
         return jsonify({'status': 'active', 'last_cleanup': bot.last_cleanup.isoformat()}), 200
     except Exception as e:
         return jsonify({'status': 'error'}), 500

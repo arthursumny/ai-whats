@@ -224,7 +224,7 @@ class WhatsAppGeminiBot:
         """Constrói o prompt usando o histórico do banco de dados"""
         try:
             # Busca histórico do banco
-            history = self._get_conversation_history(chat_id, limit=10)
+            history = self._get_conversation_history(chat_id, limit=50)
 
             if not history:
                 return current_prompt
@@ -273,12 +273,6 @@ class WhatsAppGeminiBot:
     def process_whatsapp_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Filtra mensagens conforme regras e prepara para processamento"""
         logger.info(f"Mensagem recebida: {message}")
-        # Ignora mensagens enviadas pelo próprio bot ou sem texto válido
-        if (str(message.get('from_me')).lower() == 'true' or 
-            message.get('type') not in ['text', None] or
-            not message.get('text', {}).get('body')):
-            logger.info(f"Ignorando mensagem própria: {message.get('id')}")
-            return None
 
         # Verifica se a mensagem já foi processada (banco de dados)
         message_id = message.get('id')
@@ -287,10 +281,6 @@ class WhatsAppGeminiBot:
 
         chat_id = message.get('chat_id')
         texto_original = message.get('text', {}).get('body', '').strip()
-
-        # Ignora mensagens vazias ou do próprio bot (verifica por prefixos comuns)
-        if not texto_original or texto_original.startswith(('*Revora AI:*')):
-            return None
 
         self._save_message(
             message_id=message_id,
@@ -339,11 +329,9 @@ class WhatsAppGeminiBot:
 
     def send_whatsapp_message(self, chat_id: str, text: str, reply_to: str) -> bool:
         """Envia mensagem formatada para o WhatsApp"""
-        mensagem_formatada = f"*Revora AI:*\n\n{text}"
-
         payload = {
             "to": chat_id,
-            "body": mensagem_formatada,
+            "body": text,
             "reply": reply_to
         }
 
