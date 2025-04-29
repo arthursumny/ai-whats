@@ -7,7 +7,6 @@ import re
 import logging
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
-import sqlite3
 import psycopg2
 from psycopg2 import sql, OperationalError
 from psycopg2.extras import RealDictCursor
@@ -129,10 +128,9 @@ class WhatsAppGeminiBot:
 
     def _clean_old_conversations(self):
         """Limpa apenas conversas inativas por mais de 10 minutos"""
+        current_time = datetime.now()
+        inactive_chats = []
         try:
-            current_time = datetime.now()
-            inactive_chats = []
-    
             # 1. Verifica inatividade na memória
             for chat_id, context_data in list(self.conversation_contexts.items()):
                 if (current_time - context_data['last_activity']).total_seconds() > self.inactivity_timeout:
@@ -146,22 +144,27 @@ class WhatsAppGeminiBot:
             # 2. Remove da memória
             for chat_id in inactive_chats:
                 del self.conversation_contexts[chat_id]
-                logger.info(f"Chat {chat_id} removido por inatividade")
     
-            # 3. Limpa o banco de dados SOMENTE se houver chats inativos
-            if inactive_chats:
-                with self._get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("""
-                            DELETE FROM conversation_history 
-                            WHERE timestamp < NOW() - INTERVAL '10 minutes'
-                            AND chat_id = ANY(%s)
-                        """, (inactive_chats,))
-                        conn.commit()
-                        logger.info(f"Limpeza BD: {cursor.rowcount} registros do(s) chat(s) {inactive_chats} removidos")
-    
+            with self._get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Remove registros antigos e mantém histórico recente
+                    cursor.execute("""
+                        DELETE FROM conversation_history 
+                        WHERE timestamp < %s
+                        AND chat_id NOT IN (
+                            SELECT DISTINCT chat_id 
+                            FROM conversation_history 
+                            WHERE timestamp >= %s
+                            LIMIT 100  -- Proteção contra overload
+                        )
+                    """, (current_time - timedelta(minutes=10), 
+                          current_time - timedelta(minutes=5)))
+
+                    conn.commit()
+                    logger.info(f"Limpeza BD: {cursor.rowcount} registros")
+
         except Exception as e:
-            logger.error(f"Erro na limpeza: {e}", exc_info=True)
+            logger.error(f"Falha na limpeza: {e}", exc_info=True)
 
     def reload_env(self):
         """Recarrega variáveis do .env"""

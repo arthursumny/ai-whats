@@ -1,13 +1,32 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 import logging
-from main_turnos_teste import WhatsAppGeminiBot  # Importe sua classe principal
+from main_turnos_teste import WhatsAppGeminiBot
+import os
+import requests
+import time
+from threading import Thread
 
 
 app = Flask(__name__)
 
 # Inicialize o bot
 bot = WhatsAppGeminiBot()
+
+def start_background_tasks():
+    """Inicia tarefas em segundo plano para manter o app ativo"""
+    def keep_alive():
+        while True:
+            try:
+                # Auto-acionamento a cada 5 minutos
+                if os.getenv('ENVIRONMENT') == 'production':
+                    requests.get(f"http://localhost:{os.getenv('PORT', '10000')}/healthcheck")
+                time.sleep(300)  # 5 minutos
+            except Exception as e:
+                logging.error(f"Erro no keep-alive: {str(e)}")
+
+    if os.getenv('ENVIRONMENT') == 'production':
+        Thread(target=keep_alive, daemon=True).start()
 
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
@@ -62,17 +81,40 @@ def handle_webhook():
         logging.error(f"Erro no webhook: {str(e)}", exc_info=True)
         return jsonify({'status': 'error'}), 500
 
+def start_background_tasks():
+    def keep_alive():
+        while True:
+            try:
+                # Auto-aciona o webhook a cada 5 minutos
+                requests.get(f"http://localhost:{os.getenv('PORT', '10000')}/healthcheck")
+                time.sleep(300)
+            except Exception as e:
+                logging.error(f"Erro no keep-alive: {e}")
+
+    # Inicia a thread quando o app iniciar
+    if os.getenv('ENVIRONMENT') == 'production':
+        Thread(target=keep_alive, daemon=True).start()
+
 @app.route('/healthcheck')
 def healthcheck():
     try:
         now = datetime.now()
-        if not hasattr(bot, 'last_cleanup') or (now - bot.last_cleanup).total_seconds() > 600:
+        # Limpeza a cada 10 minutos
+        if (now - bot.last_cleanup).total_seconds() > 600:
             bot._clean_old_conversations(now)
-            bot.last_cleanup = datetime.now()
-            logging.info("Limpeza de conversas antigas realizada.")
-        return jsonify({'status': 'active', 'last_cleanup': bot.last_cleanup.isoformat()}), 200
+            bot.last_cleanup = now
+            logging.info("Limpeza automática executada via healthcheck")
+        
+        return jsonify({
+            'status': 'active',
+            'last_cleanup': bot.last_cleanup.isoformat()
+        }), 200
     except Exception as e:
+        logging.error(f"Healthcheck falhou: {str(e)}")
         return jsonify({'status': 'error'}), 500
 
+# Inicia as tarefas em segundo plano
+start_background_tasks()
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)  # Render usa porta 10000
+    app.run(host='0.0.0.0', port=10000)
