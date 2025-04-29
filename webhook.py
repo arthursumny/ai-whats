@@ -16,7 +16,9 @@ def handle_webhook():
         if not data:
             return jsonify({'status': 'Dados inválidos'}), 400
         
-        bot._clean_old_conversations()
+        if datetime.time() - bot.last_cleanup > 600:
+            bot._clean_old_conversations()
+            bot.last_cleanup = datetime.time()
 
         messages = data.get('messages', [])
         for message in messages:

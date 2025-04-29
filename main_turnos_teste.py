@@ -44,6 +44,7 @@ class WhatsAppGeminiBot:
             raise ValueError("Chaves API não configuradas no .env")
         
         self.setup_apis()
+        self.last_cleanup = time.time()
 
     def _get_db_connection(self):
         """Estabelece conexão com o Supabase"""
@@ -127,40 +128,40 @@ class WhatsAppGeminiBot:
             return []
 
     def _clean_old_conversations(self):
-        """Limpa conversas inativas por mais de 10 minutos (memória + banco)"""
+        """Limpa apenas conversas inativas por mais de 10 minutos"""
         try:
-            # Limpeza da memória
             current_time = datetime.now()
             inactive_chats = []
-
+    
+            # 1. Verifica inatividade na memória
             for chat_id, context_data in list(self.conversation_contexts.items()):
-                last_activity = context_data['last_activity']
-                if (current_time - last_activity).total_seconds() > self.inactivity_timeout:
+                if (current_time - context_data['last_activity']).total_seconds() > self.inactivity_timeout:
                     inactive_chats.append(chat_id)
-                    # Envia mensagem de encerramento
                     self.send_whatsapp_message(
                         chat_id=chat_id,
                         text="Contexto encerrado por inatividade. Envie nova mensagem.",
                         reply_to=None
                     )
-
-            # Remove da memória
+    
+            # 2. Remove da memória
             for chat_id in inactive_chats:
                 del self.conversation_contexts[chat_id]
-
-            # Limpeza do banco de dados
-            with self._get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    # Deleta histórico com mais de 10 minutos
-                    cursor.execute("""
-                        DELETE FROM conversation_history 
-                        WHERE timestamp < NOW() - INTERVAL '10 minutes'
-                    """)
-                    conn.commit()
-                    logger.info(f"Limpeza BD: {cursor.rowcount} registros removidos")
-
+                logger.info(f"Chat {chat_id} removido por inatividade")
+    
+            # 3. Limpa o banco de dados SOMENTE se houver chats inativos
+            if inactive_chats:
+                with self._get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            DELETE FROM conversation_history 
+                            WHERE timestamp < NOW() - INTERVAL '10 minutes'
+                            AND chat_id = ANY(%s)
+                        """, (inactive_chats,))
+                        conn.commit()
+                        logger.info(f"Limpeza BD: {cursor.rowcount} registros do(s) chat(s) {inactive_chats} removidos")
+    
         except Exception as e:
-            logger.error(f"Erro na limpeza: {e}")
+            logger.error(f"Erro na limpeza: {e}", exc_info=True)
 
     def reload_env(self):
         """Recarrega variáveis do .env"""
@@ -270,6 +271,7 @@ class WhatsAppGeminiBot:
             raise
 
     def process_whatsapp_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        logger.info(f"Mensagem recebida: {message}")
         """Filtra mensagens conforme regras e prepara para processamento"""
         # Ignora mensagens enviadas pelo próprio bot ou sem texto válido
         if (message.get('from_me') == 'true' or 
