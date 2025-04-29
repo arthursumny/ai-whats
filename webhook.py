@@ -37,7 +37,6 @@ def handle_webhook():
                     del bot.conversation_contexts[chat_id]
 
             if str(message.get('from_me')).lower() == 'true' or not message.get('text'):
-                logging.info(f"Ignorando mensagem própria 1: {message.get('id')}")
                 continue
 
             if processed := bot.process_whatsapp_message(message):
@@ -69,7 +68,7 @@ def healthcheck():
         now = datetime.now()
         if not hasattr(bot, 'last_cleanup') or (now - bot.last_cleanup).total_seconds() > 600:
             bot._clean_old_conversations(now)
-            bot.last_cleanup = now
+            bot.last_cleanup = datetime.now()
             logging.info("Limpeza de conversas antigas realizada.")
         return jsonify({'status': 'active', 'last_cleanup': bot.last_cleanup.isoformat()}), 200
     except Exception as e:

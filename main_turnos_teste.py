@@ -352,7 +352,6 @@ class WhatsAppGeminiBot:
 
     def run(self):
         """Aguarda mensagens via webhook (não faz mais polling)"""
-        logger.info("Bot aguardando mensagens via webhook...")
         try:
             while True:
                 time.sleep(1)  # Mantém o script vivo sem consumir CPU
