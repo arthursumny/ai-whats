@@ -43,7 +43,7 @@ def handle_webhook():
                     )
                     del bot.conversation_contexts[chat_id]
 
-            if message.get('direction') == 'outgoing' or not message.get('text'):
+            if message.get('from_me') == 'True' or not message.get('text'):
                 continue
 
             if processed := bot.process_whatsapp_message(message):
