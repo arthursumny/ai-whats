@@ -36,7 +36,7 @@ def handle_webhook():
                     )
                     del bot.conversation_contexts[chat_id]
 
-            if message.get('from_me') == 'True' or not message.get('text'):
+            if str(message.get('from_me')).lower() == 'true' or not message.get('text'):
                 continue
 
             if processed := bot.process_whatsapp_message(message):

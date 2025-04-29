@@ -274,10 +274,10 @@ class WhatsAppGeminiBot:
         """Filtra mensagens conforme regras e prepara para processamento"""
         logger.info(f"Mensagem recebida: {message}")
         # Ignora mensagens enviadas pelo próprio bot ou sem texto válido
-        if (message.get('from_me') == 'True' or 
-            message.get('type') not in ['text', None] or  # Filtra apenas mensagens de texto
+        if (str(message.get('from_me')).lower() == 'true' or 
+            message.get('type') not in ['text', None] or
             not message.get('text', {}).get('body')):
-            logger.info(f"Mensagem recebida 2: {message}")
+            logger.info(f"Ignorando mensagem própria: {message.get('id')}")
             return None
 
         # Verifica se a mensagem já foi processada (banco de dados)
