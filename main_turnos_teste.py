@@ -28,7 +28,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 pdf_files = [
-    genai.upload_file('manual_zombicide_invaders.txt')
 ]
 
 class WhatsAppGeminiBot:
@@ -337,7 +336,7 @@ class WhatsAppGeminiBot:
 
     def send_whatsapp_message(self, chat_id: str, text: str, reply_to: str) -> bool:
         """Envia mensagem formatada para o WhatsApp"""
-        mensagem_formatada = f"*BrainEater Guide:*\n\n{text}"
+        mensagem_formatada = f"*Revora AI:*\n\n{text}"
 
         payload = {
             "to": chat_id,

@@ -41,7 +41,7 @@ def handle_webhook():
                     processed['chat_id']
                 )
                 # Evita responder a si mesmo (opcional)
-                if not resposta.startswith(('*BrainEater Guide:*', '⚠️')):
+                if not resposta.startswith(('*Revora AI:*', '⚠️')):
                     bot.send_whatsapp_message(
                         processed['chat_id'],
                         resposta,
