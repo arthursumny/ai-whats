@@ -37,6 +37,7 @@ def handle_webhook():
                     del bot.conversation_contexts[chat_id]
 
             if str(message.get('from_me')).lower() == 'true' or not message.get('text'):
+                logging.info(f"Ignorando mensagem própria: {message.get('id')}")
                 continue
 
             if processed := bot.process_whatsapp_message(message):
