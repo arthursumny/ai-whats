@@ -6,6 +6,23 @@ from main_turnos_teste import WhatsAppGeminiBot
 app = Flask(__name__)
 bot = WhatsAppGeminiBot()
 
+# Configura um logger específico para health checks
+health_logger = logging.getLogger('health')
+health_logger.setLevel(logging.WARNING)  # Só loga erros graves
+
+@app.route('/healthz')
+def health_check():
+    """Endpoint silencioso para health checks"""
+    try:
+        # Verificação rápida do BD (sem logs em caso de sucesso)
+        with bot._get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+        return jsonify({'status': 'healthy'}), 200
+    except Exception as e:
+        health_logger.error(f"Falha no health check: {str(e)}", exc_info=True)
+        return jsonify({'status': 'unhealthy'}), 500
+
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
     try:
