@@ -272,11 +272,12 @@ class WhatsAppGeminiBot:
 
     def process_whatsapp_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Filtra mensagens conforme regras e prepara para processamento"""
+        logger.info(f"Mensagem recebida: {message}")
         # Ignora mensagens enviadas pelo próprio bot ou sem texto válido
         if (message.get('from_me') == 'True' or 
             message.get('type') not in ['text', None] or  # Filtra apenas mensagens de texto
             not message.get('text', {}).get('body')):
-            logger.info(f"Mensagem recebida: {message}")
+            logger.info(f"Mensagem recebida 2: {message}")
             return None
 
         # Verifica se a mensagem já foi processada (banco de dados)
