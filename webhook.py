@@ -37,8 +37,17 @@ def handle_webhook():
         for message in messages:
             chat_id = message.get('chat_id')
             
-            # Filtro principal - ignora mensagens do bot ou sem texto ou se nao comecarem com a palavra Revora AI
-            if str(message.get('from_me')).lower() == 'true' or not message.get('text') or not message.get('text').startswith('Revora AI'):
+            # Get text safely and handle different cases
+            text_content = message.get('text')
+            
+            # If text is a dictionary, try to extract the actual text
+            if isinstance(text_content, dict):
+                text_content = text_content.get('body') or text_content.get('content') or ''
+            
+            # Filtro principal - ignora mensagens do bot ou sem texto ou se nao comecarem com "Revora AI"
+            if (str(message.get('from_me', '')).lower() == 'true' or 
+                not text_content or 
+                not (isinstance(text_content, str) and text_content.startswith('revoraAI'))):
                 continue
 
             # Verifica inatividade do chat específico
