@@ -37,8 +37,8 @@ def handle_webhook():
         for message in messages:
             chat_id = message.get('chat_id')
             
-            # Filtro principal - ignora mensagens do bot ou sem texto
-            if str(message.get('from_me')).lower() == 'true' or not message.get('text'):
+            # Filtro principal - ignora mensagens do bot ou sem texto ou se nao comecarem com a palavra Revora AI
+            if str(message.get('from_me')).lower() == 'true' or not message.get('text') or not message.get('text').startswith('Revora AI'):
                 continue
 
             # Verifica inatividade do chat específico
@@ -55,7 +55,7 @@ def handle_webhook():
                     )
                     del bot.conversation_contexts[chat_id]
 
-            # Processa mensagem válida
+            # Processa mensagem válida 
             if processed := bot.process_whatsapp_message(message):
                 resposta = bot.generate_gemini_response(
                     processed['texto_original'],
