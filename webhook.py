@@ -46,10 +46,9 @@ def handle_webhook():
             
             # Filtro principal - ignora mensagens do bot ou sem texto ou se nao comecarem com "Revora AI"
             if (str(message.get('from_me', '')).lower() == 'true' or 
-                not text_content or 
-                not (isinstance(text_content, str) and text_content.startswith('revoraAI'))):
+                not text_content):
                 continue
-
+            """
             # Verifica inatividade do chat específico
             if chat_id in bot.conversation_contexts:
                 last_activity = bot.conversation_contexts[chat_id]['last_activity']
@@ -63,7 +62,7 @@ def handle_webhook():
                         reply_to=None
                     )
                     del bot.conversation_contexts[chat_id]
-
+            """
             # Processa mensagem válida 
             if processed := bot.process_whatsapp_message(message):
                 resposta = bot.generate_gemini_response(
@@ -82,10 +81,11 @@ def handle_webhook():
                     processed['texto_original'],
                     resposta
                 )
-
+        """
         # Limpeza geral do BD
         if messages:
             bot._clean_old_conversations(current_time, cleanup_db=True)
+        """
 
         return jsonify({'status': 'success'}), 200
     except Exception as e:

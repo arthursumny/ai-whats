@@ -214,9 +214,8 @@ class WhatsAppGeminiBot:
             {'role': 'user', 'content': user_message},
             {'role': 'assistant', 'content': bot_response}
         ])
-        
         # Atualiza o tempo da última atividade
-        self.conversation_contexts[chat_id]['last_activity'] = now
+        # self.conversation_contexts[chat_id]['last_activity'] = now
         
         # Salva no histórico
         self._save_conversation_history(chat_id, user_message, False)
