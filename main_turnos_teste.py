@@ -7,9 +7,8 @@ import re
 import logging
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
-import psycopg2
-from psycopg2 import sql, OperationalError
-from psycopg2.extras import RealDictCursor
+from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 from datetime import datetime, timedelta
 
 # Carrega variáveis do .env
@@ -26,18 +25,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-pdf_files = [
-]
-
 class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
-        self.db_file = "bot_database.db"
-        self._init_db()  # Inicializa o banco de dados
+        self.db = firestore.Client()
         
-        self.processed_message_ids = set()  # Armazena IDs de mensagens já processadas
-        self.conversation_contexts = {}  # Armazena o contexto das conversas por chat_id
-        self.inactivity_timeout = 600  # 10 minutos em segundos
+        self.processed_message_ids = set()  
+        self.conversation_contexts = {}  
         
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
@@ -45,125 +39,46 @@ class WhatsAppGeminiBot:
         self.setup_apis()
         self.last_cleanup = datetime.now()
 
-    def _get_db_connection(self):
-        """Estabelece conexão com o Supabase"""
-        try:
-            return psycopg2.connect(
-                dbname=os.getenv('SUPABASE_DB_NAME'),
-                user=os.getenv('SUPABASE_USER'),
-                password=os.getenv('SUPABASE_PASSWORD'),
-                host=os.getenv('SUPABASE_HOST'),
-                port=os.getenv('SUPABASE_PORT')
-            )
-        except OperationalError as e:
-            logger.error(f"Erro ao conectar ao Supabase: {e}")
-            raise
 
-    def _init_db(self):
-        """Verifica se as tabelas existem (já criamos manualmente no Supabase)"""
-        pass  # As tabelas já foram criadas manualmente
 
     def _message_exists(self, message_id: str) -> bool:
-        """Verifica se a mensagem já foi processada"""
-        try:
-            with self._get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT 1 FROM processed_messages WHERE id = %s", 
-                        (message_id,)
-                    )
-                    return cursor.fetchone() is not None
-        except Exception as e:
-            logger.error(f"Erro ao verificar mensagem: {e}")
-            return True  # Em caso de erro, assume que já foi processada
+        """Verifica se a mensagem já foi processada (Firestore)"""
+        doc_ref = self.db.collection("processed_messages").document(message_id)
+        return doc_ref.get().exists
 
     def _save_message(self, message_id: str, chat_id: str, text: str):
-        """Armazena a mensagem no banco de dados"""
-        try:
-            with self._get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        """INSERT INTO processed_messages 
-                           (id, chat_id, text_content) 
-                           VALUES (%s, %s, %s)
-                           ON CONFLICT (id) DO NOTHING""",
-                        (message_id, chat_id, text)
-                    )
-                    conn.commit()
-        except Exception as e:
-            logger.error(f"Erro ao salvar mensagem: {e}")
+        """Armazena a mensagem no Firestore"""
+        doc_ref = self.db.collection("processed_messages").document(message_id)
+        doc_ref.set({
+            "chat_id": chat_id,
+            "text_content": text,
+            "processed_at": firestore.SERVER_TIMESTAMP
+        })
 
     def _save_conversation_history(self, chat_id: str, message_text: str, is_bot: bool):
-        """Armazena o histórico da conversa"""
-        try:
-            with self._get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        """INSERT INTO conversation_history 
-                           (chat_id, message_text, is_bot) 
-                           VALUES (%s, %s, %s)""",
-                        (chat_id, message_text, is_bot)
-                    )
-                    conn.commit()
-        except Exception as e:
-            logger.error(f"Erro ao salvar histórico: {e}")
+        """Armazena o histórico da conversa no Firestore"""
+        col_ref = self.db.collection("conversation_history")
+        col_ref.add({
+            "chat_id": chat_id,
+            "message_text": message_text,
+            "is_bot": is_bot,
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
 
     def _get_conversation_history(self, chat_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Obtém o histórico de conversa para um chat_id específico"""
-        try:
-            with self._get_db_connection() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                    cursor.execute(
-                        """SELECT message_text, is_bot, timestamp 
-                           FROM conversation_history 
-                           WHERE chat_id = %s 
-                           ORDER BY timestamp DESC 
-                           LIMIT %s""",
-                        (chat_id, limit)
-                    )
-                    return cursor.fetchall()
-        except Exception as e:
-            logger.error(f"Erro ao obter histórico: {e}")
-            return []
-
-    def _clean_old_conversations(self, current_time=None, cleanup_db=True):
-        """Limpa conversas inativas com controle de limpeza do BD
+        """Obtém o histórico de conversa do Firestore"""
+        query = (
+            self.db.collection("conversation_history")
+            .where(filter=FieldFilter("chat_id", "==", chat_id))
+            .order_by("timestamp", direction=firestore.Query.DESCENDING)
+            .limit(limit)
+        )
         
-        Args:
-            cleanup_db (bool): Se False, só limpa da memória
-        """
-        current_time = current_time or datetime.now()
-        inactive_chats = []
-    
-        try:
-            # 1. Identifica chats inativos
-            for chat_id, context in list(self.conversation_contexts.items()):
-                if (current_time - context['last_activity']).total_seconds() > self.inactivity_timeout:
-                    inactive_chats.append(chat_id)
-                    self.send_whatsapp_message(
-                        chat_id=chat_id,
-                        text="Contexto encerrado por inatividade",
-                        reply_to=None
-                    )
-    
-            # 2. Remove da memória
-            for chat_id in inactive_chats:
-                del self.conversation_contexts[chat_id]
-    
-            # 3. Limpeza do BD (só se solicitado)
-            if cleanup_db and inactive_chats:
-                with self._get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("""
-                            DELETE FROM conversation_history 
-                            WHERE timestamp < %s
-                            AND chat_id = ANY(%s)
-                        """, (current_time - timedelta(minutes=10), inactive_chats))
-                        conn.commit()
-                        logger.info(f"Limpeza BD concluída: {cursor.rowcount} registros")
-    
-        except Exception as e:
-            logger.error(f"Erro na limpeza: {e}", exc_info=True)
+        return [{
+            'message_text': doc.get('message_text'),
+            'is_bot': doc.get('is_bot'),
+            'timestamp': doc.get('timestamp')
+        } for doc in query.stream()]
 
     def reload_env(self):
         """Recarrega variáveis do .env"""
@@ -214,8 +129,6 @@ class WhatsAppGeminiBot:
             {'role': 'user', 'content': user_message},
             {'role': 'assistant', 'content': bot_response}
         ])
-        # Atualiza o tempo da última atividade
-        # self.conversation_contexts[chat_id]['last_activity'] = now
         
         # Salva no histórico
         self._save_conversation_history(chat_id, user_message, False)

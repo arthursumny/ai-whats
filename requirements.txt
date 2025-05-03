@@ -3,4 +3,5 @@ google-genai
 python-dotenv
 requests
 flask
-psycopg2-binary
+gunicorn
+google-cloud-firestore

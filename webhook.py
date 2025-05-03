@@ -2,6 +2,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 import logging
 from main_turnos_teste import WhatsAppGeminiBot
+from google.cloud import firestore
 
 app = Flask(__name__)
 bot = WhatsAppGeminiBot()
@@ -12,12 +13,10 @@ health_logger.setLevel(logging.WARNING)  # Só loga erros graves
 
 @app.route('/healthz')
 def health_check():
-    """Endpoint silencioso para health checks"""
+    """Endpoint simplificado para Cloud Run"""
     try:
-        # Verificação rápida do BD (sem logs em caso de sucesso)
-        with bot._get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT 1")
+        # Verificação básica do Firestore
+        list(bot.db.collection("processed_messages").limit(1).stream())
         return jsonify({'status': 'healthy'}), 200
     except Exception as e:
         health_logger.error(f"Falha no health check: {str(e)}", exc_info=True)
@@ -30,7 +29,6 @@ def handle_webhook():
         if not data:
             return jsonify({'status': 'Dados inválidos'}), 400
 
-        current_time = datetime.now()
         messages = data.get('messages', [])
 
         # Processa cada mensagem
@@ -48,21 +46,7 @@ def handle_webhook():
             if (str(message.get('from_me', '')).lower() == 'true' or 
                 not text_content):
                 continue
-            """
-            # Verifica inatividade do chat específico
-            if chat_id in bot.conversation_contexts:
-                last_activity = bot.conversation_contexts[chat_id]['last_activity']
-                if isinstance(last_activity, float):
-                    last_activity = datetime.fromtimestamp(last_activity)
-                
-                if (current_time - last_activity).total_seconds() > bot.inactivity_timeout:
-                    bot.send_whatsapp_message(
-                        chat_id=chat_id,
-                        text="Contexto encerrado por inatividade",
-                        reply_to=None
-                    )
-                    del bot.conversation_contexts[chat_id]
-            """
+
             # Processa mensagem válida 
             if processed := bot.process_whatsapp_message(message):
                 resposta = bot.generate_gemini_response(
@@ -81,11 +65,7 @@ def handle_webhook():
                     processed['texto_original'],
                     resposta
                 )
-        """
-        # Limpeza geral do BD
-        if messages:
-            bot._clean_old_conversations(current_time, cleanup_db=True)
-        """
+
 
         return jsonify({'status': 'success'}), 200
     except Exception as e:
@@ -93,4 +73,4 @@ def handle_webhook():
         return jsonify({'status': 'error'}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    app.run(host='0.0.0.0', port=8080)
