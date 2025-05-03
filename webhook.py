@@ -35,7 +35,7 @@ def handle_webhook():
         # Processa cada mensagem
         for message in messages:
             chat_id = message.get('chat_id')
-            
+
             # Get text safely and handle different cases
             text_content = message.get('text')
             
@@ -43,7 +43,7 @@ def handle_webhook():
             if isinstance(text_content, dict):
                 text_content = text_content.get('body') or text_content.get('content') or ''
             
-            # Filtro principal - ignora mensagens do bot ou sem texto ou se nao comecarem com "Revora AI"
+            # Filtro principal - ignora mensagens do bot ou sem texto
             if (str(message.get('from_me', '')).lower() == 'true' or 
                 not text_content):
                 continue

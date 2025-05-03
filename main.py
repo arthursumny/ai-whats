@@ -30,28 +30,23 @@ class WhatsAppGeminiBot:
         self.reload_env()
         self.db = firestore.Client(project="voola-ai")
         
-        self.processed_message_ids = set()  
-        self.conversation_contexts = {}  
-        
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
         
         self.setup_apis()
-        self.last_cleanup = datetime.now()
-
-
 
     def _message_exists(self, message_id: str) -> bool:
         """Verifica se a mensagem já foi processada (Firestore)"""
         doc_ref = self.db.collection("processed_messages").document(message_id)
         return doc_ref.get().exists
 
-    def _save_message(self, message_id: str, chat_id: str, text: str):
+    def _save_message(self, message_id: str, chat_id: str, text: str, from_name: str):
         """Armazena a mensagem no Firestore"""
         doc_ref = self.db.collection("processed_messages").document(message_id)
         doc_ref.set({
             "chat_id": chat_id,
             "text_content": text,
+            "from_name": from_name,
             "processed_at": firestore.SERVER_TIMESTAMP
         })
 
@@ -65,20 +60,25 @@ class WhatsAppGeminiBot:
             "timestamp": firestore.SERVER_TIMESTAMP
         })
 
-    def _get_conversation_history(self, chat_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Obtém o histórico de conversa do Firestore"""
-        query = (
-            self.db.collection("conversation_history")
-            .where(filter=FieldFilter("chat_id", "==", chat_id))
-            .order_by("timestamp", direction=firestore.Query.DESCENDING)
-            .limit(limit)
-        )
-        
-        return [{
-            'message_text': doc.get('message_text'),
-            'is_bot': doc.get('is_bot'),
-            'timestamp': doc.get('timestamp')
-        } for doc in query.stream()]
+    def _get_conversation_history(self, chat_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Obtém histórico ordenado cronologicamente"""
+        try:
+            query = (
+                self.db.collection("conversation_history")
+                .where("chat_id", "==", chat_id)
+                .order_by("timestamp", direction=firestore.Query.ASCENDING)  # Ordem crescente
+                .limit_to_last(limit)  # Pega os últimos N registros
+            )
+            
+            return [{
+                'message_text': doc.get('message_text'),
+                'is_bot': doc.get('is_bot'),
+                'timestamp': doc.get('timestamp').timestamp() if doc.get('timestamp') else None
+            } for doc in query.stream()]
+            
+        except Exception as e:
+            logger.error(f"Erro ao buscar histórico: {e}")
+            return []
 
     def reload_env(self):
         """Recarrega variáveis do .env"""
@@ -115,46 +115,46 @@ class WhatsAppGeminiBot:
             raise
 
     def update_conversation_context(self, chat_id: str, user_message: str, bot_response: str):
-        """Atualiza o contexto da conversa para um chat_id específico"""
-        now = datetime.now()
-        
-        if chat_id not in self.conversation_contexts:
-            self.conversation_contexts[chat_id] = {
-                'messages': [],
-                'last_activity': now
-            }
-        
-        # Adiciona a mensagem do usuário e a resposta do bot ao contexto
-        self.conversation_contexts[chat_id]['messages'].extend([
-            {'role': 'user', 'content': user_message},
-            {'role': 'assistant', 'content': bot_response}
-        ])
-        
-        # Salva no histórico
-        self._save_conversation_history(chat_id, user_message, False)
-        self._save_conversation_history(chat_id, bot_response, True)
+        """Atualiza o contexto diretamente no Firestore"""
+        try:
+            # Salva histórico no Firestore
+            self._save_conversation_history(chat_id, user_message, False)
+            self._save_conversation_history(chat_id, bot_response, True)
+            
+            # Atualiza último contexto
+            context_ref = self.db.collection("conversation_contexts").document(chat_id)
+            context_ref.set({
+                "last_updated": firestore.SERVER_TIMESTAMP,
+                "last_user_message": user_message,
+                "last_bot_response": bot_response
+            }, merge=True)
+            
+        except Exception as e:
+            logger.error(f"Erro ao atualizar contexto: {e}")
 
     def build_context_prompt(self, chat_id: str, current_prompt: str) -> str:
-        """Constrói o prompt usando o histórico do banco de dados"""
+        """Constrói o prompt com histórico formatado corretamente"""
         try:
-            # Busca histórico do banco
-            history = self._get_conversation_history(chat_id, limit=50)
-
+            history = self._get_conversation_history(chat_id, limit=500)  # Reduzido para melhor performance
+            
             if not history:
                 return current_prompt
 
-            # Formata o contexto
+            # Ordena cronologicamente e formata
+            sorted_history = sorted(history, key=lambda x: x['timestamp'])
+            
             context_str = "\n".join(
-                f"{'Usuário' if not row['is_bot'] else 'Assistente'}: {row['message_text']}" 
-                for row in reversed(history)  # Inverte para ordem cronológica correta
+                f"{'Usuário' if not msg['is_bot'] else 'Assistente'}: {msg['message_text']}" 
+                for msg in sorted_history
             )
-        
+            
             return (
-                f"Essas são as mensagens anteriores, utilize como contexto para continuar essa conversa, se necessário:\n"
+                "Histórico da conversa:\n"
                 f"{context_str}\n\n"
-                f"Continue a conversa respondendo a esta mensagem:\n"
+                "Nova mensagem para responder:\n"
                 f"Usuário: {current_prompt}"
             )
+            
         except Exception as e:
             logger.error(f"Erro ao construir contexto: {e}")
             return current_prompt
@@ -194,17 +194,21 @@ class WhatsAppGeminiBot:
             return None
 
         chat_id = message.get('chat_id')
+        from_name = message.get('from_name')
         texto_original = message.get('text', {}).get('body', '').strip()
 
         self._save_message(
             message_id=message_id,
             chat_id=chat_id,
-            text=texto_original
+            text=texto_original,
+            from_name=from_name
+
         )
         return {
             'chat_id': chat_id,
             'texto_original': texto_original,
-            'message_id': message_id
+            'message_id': message_id,
+            'from_name': from_name
         }
     def generate_gemini_response(self, prompt: str, chat_id: str, pdf_paths: list = None) -> str:
         """Gera resposta usando Gemini com contexto da conversa"""
