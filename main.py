@@ -60,22 +60,25 @@ class WhatsAppGeminiBot:
             "timestamp": firestore.SERVER_TIMESTAMP
         })
 
-    def _get_conversation_history(self, chat_id: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """Obtém histórico ordenado cronologicamente"""
+    def _get_conversation_history(self, chat_id: str, limit: int = 500) -> List[Dict[str, Any]]:
+        """Obtém histórico ordenado cronologicamente (corrigido)"""
         try:
             query = (
                 self.db.collection("conversation_history")
                 .where("chat_id", "==", chat_id)
-                .order_by("timestamp", direction=firestore.Query.ASCENDING)  # Ordem crescente
-                .limit_to_last(limit)  # Pega os últimos N registros
+                .order_by("timestamp", direction=firestore.Query.ASCENDING)
+                .limit_to_last(limit)
             )
-            
+
+            # Substitua .stream() por .get()
+            docs = query.get()  # Isso resolve o erro
+
             return [{
                 'message_text': doc.get('message_text'),
                 'is_bot': doc.get('is_bot'),
                 'timestamp': doc.get('timestamp').timestamp() if doc.get('timestamp') else None
-            } for doc in query.stream()]
-            
+            } for doc in docs]
+
         except Exception as e:
             logger.error(f"Erro ao buscar histórico: {e}")
             return []
