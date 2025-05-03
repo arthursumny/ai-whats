@@ -1,7 +1,7 @@
 from datetime import datetime
 from flask import Flask, request, jsonify
 import logging
-from main_turnos_teste import WhatsAppGeminiBot
+from main import WhatsAppGeminiBot
 from google.cloud import firestore
 
 app = Flask(__name__)
