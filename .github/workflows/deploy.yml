@@ -1,0 +1,39 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  RUN_SERVICE_NAME: bot-whatsapp
+  REGION: us-central1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      # Configura GCP
+      - uses: google-github-actions/setup-gcloud@v0
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          export_default_credentials: true
+
+      # Constrói e envia a imagem
+      - run: |-
+          gcloud builds submit \
+            --tag gcr.io/$PROJECT_ID/$RUN_SERVICE_NAME \
+            --project $PROJECT_ID
+
+      # Implanta no Cloud Run
+      - run: |-
+          gcloud run deploy $RUN_SERVICE_NAME \
+            --image gcr.io/$PROJECT_ID/$RUN_SERVICE_NAME \
+            --platform managed \
+            --region $REGION \
+            --allow-unauthenticated \
+            --set-env-vars="WHAPI_API_KEY=${{ secrets.WHAPI_KEY }},GEMINI_API_KEY=${{ secrets.GEMINI_KEY }}" \
+            --project $PROJECT_ID

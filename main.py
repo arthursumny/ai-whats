@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
-        self.db = firestore.Client()
+        self.db = firestore.Client(project="voola-ai")
         
         self.processed_message_ids = set()  
         self.conversation_contexts = {}  

@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 from flask import Flask, request, jsonify
 import logging
 from main import WhatsAppGeminiBot
@@ -73,4 +74,4 @@ def handle_webhook():
         return jsonify({'status': 'error'}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
