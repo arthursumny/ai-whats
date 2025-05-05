@@ -27,6 +27,17 @@ logger = logging.getLogger(__name__)
 
 class WhatsAppGeminiBot:
     PENDING_CHECK_INTERVAL = 5
+    REENGAGEMENT_TIMEOUT = 43200  # 12 horas em segundos
+    REENGAGEMENT_MESSAGES = [
+        "Oi!Está tudo bem por aí? Posso ajudar com algo?",
+        "Estava pensando em você! Como posso ajudar?",
+        "Oi! Espero que esteja tudo certo. Estou aqui se precisar de algo!",
+        "Oi, tudo bem? Se quiser conversar comigo, estou à disposição!",
+        "Oi! Como posso ajudar você hoje?",
+        "Oi! Estou aqui para ajudar. Como posso ser útil?",
+        "Oi! Se precisar de algo, estou por aqui.",
+        "Oi! Estou aqui para ajudar. O que você precisa?",
+    ]
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai")
@@ -319,6 +330,58 @@ class WhatsAppGeminiBot:
             logger.error(f"ERRO CRÍTICO ao processar {chat_id}: {str(e)}", exc_info=True)
             doc_ref.update({'processing': False})
 
+    def _check_inactive_chats(self):
+        """Verifica chats inativos para reengajamento"""
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.REENGAGEMENT_TIMEOUT)
+
+            # Busca apenas chats inativos diretamente no Firestore
+            chats_ref = self.db.collection("conversation_history")
+            query = (
+                chats_ref
+                .where("timestamp", "<", cutoff)  # Filtra apenas chats inativos
+                .order_by("timestamp", direction=firestore.Query.DESCENDING)
+            )
+
+            # Processa os chats inativos
+            for doc in query.stream():
+                chat_id = doc.get("chat_id")
+                last_msg_time = doc.get("timestamp")
+
+                if chat_id and last_msg_time:
+                    self._send_reengagement_message(chat_id)
+
+        except Exception as e:
+            logger.error(f"Erro ao verificar chats inativos: {e}", exc_info=True)
+
+    def _send_reengagement_message(self, chat_id: str):
+        """Envia mensagem de follow-up para chats inativos"""
+        try:
+            # Verifica se já foi enviada mensagem recentemente
+            last_msg_ref = self.db.collection("reengagement_logs").document(chat_id)
+            last_msg = last_msg_ref.get()
+
+            if last_msg.exists:
+                last_sent = last_msg.get("last_sent")
+                if (datetime.now(timezone.utc)) - last_sent < timedelta(hours=12):
+                    return
+
+            # Seleciona mensagem aleatória
+            import random
+            message = random.choice(self.REENGAGEMENT_MESSAGES)
+
+            # Envia mensagem
+            if self.send_whatsapp_message(chat_id, message, None):
+                # Registra no log
+                last_msg_ref.set({
+                    "last_sent": datetime.now(timezone.utc),
+                    "message": message
+                })
+                logger.info(f"Mensagem de reengajamento enviada para {chat_id}")
+
+        except Exception as e:
+            logger.error(f"Erro ao enviar reengajamento: {e}")
+
     def generate_gemini_response(self, prompt: str, chat_id: str) -> str:
         """Gera resposta considerando o contexto completo"""
         try:
@@ -334,13 +397,13 @@ class WhatsAppGeminiBot:
         if not text or not chat_id:
             logger.error("Dados inválidos para envio")
             return False
-    
+
         payload = {
             "to": chat_id,
             "body": text,
             "reply": reply_to
         }
-    
+
         try:
             logger.info(f"Enviando para WHAPI: {payload}")
             response = requests.post(
@@ -352,10 +415,10 @@ class WhatsAppGeminiBot:
                 json=payload,
                 timeout=10
             )
-            
+
             logger.info(f"Resposta WHAPI: {response.status_code} - {response.text}")
             return response.status_code == 200
-            
+
         except Exception as e:
             logger.error(f"Falha no envio: {str(e)}")
             return False
@@ -365,9 +428,16 @@ class WhatsAppGeminiBot:
         """Inicia verificação periódica de mensagens pendentes"""
         try:
             logger.info("Iniciando loop principal de verificação...")
+            last_check = datetime.now(timezone.utc)
             while True:
                 try:
+                    now = datetime.now(timezone.utc)
                     self._check_all_pending_chats()
+
+                    # Verifica chats inativos a cada hora
+                    if (now - last_check) > timedelta(hours=1):
+                        self._check_inactive_chats()
+                        last_check = now
                 except Exception as e:
                     logger.error(f"Erro na verificação de chats: {e}")
 
