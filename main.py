@@ -29,11 +29,36 @@ class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai")
+        self.pending_timeout = 45  # Timeout para mensagens pendentes (em segundos)
         
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
         
         self.setup_apis()
+
+    def _get_pending_messages(self, chat_id: str) -> Dict[str, Any]:
+        """Obtém mensagens pendentes para um chat"""
+        doc_ref = self.db.collection("pending_messages").document(chat_id)
+        return doc_ref.get().to_dict() or {}
+    
+    def _save_pending_message(self, chat_id: str, message: Dict[str, Any]):
+        """Armazena mensagem temporariamente com timestamp"""
+        doc_ref = self.db.collection("pending_messages").document(chat_id)
+
+        existing = self._get_pending_messages(chat_id)
+        messages = existing.get('messages', [])
+        messages.append(message)
+
+        doc_ref.set({
+            'messages': messages,
+            'last_update': datetime.now(),
+            'processing': False  # evitar processamento duplicado
+        })
+
+    def _delete_pending_messages(self, chat_id: str):
+        """Remove mensagens processadas"""
+        doc_ref = self.db.collection("pending_messages").document(chat_id)
+        doc_ref.delete()
 
     def _message_exists(self, message_id: str) -> bool:
         """Verifica se a mensagem já foi processada (Firestore)"""
@@ -188,65 +213,91 @@ class WhatsAppGeminiBot:
             raise
 
     def process_whatsapp_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Filtra mensagens conforme regras e prepara para processamento"""
+        """Armazena mensagem temporariamente e inicia timer"""
         logger.info(f"Mensagem recebida: {message}")
 
-        # Verifica se a mensagem já foi processada (banco de dados)
         message_id = message.get('id')
         if not message_id or self._message_exists(message_id):
             return None
 
         chat_id = message.get('chat_id')
         from_name = message.get('from_name')
-        texto_original = message.get('text', {}).get('body', '').strip()
+        texto = message.get('text', {}).get('body', '').strip()
 
-        self._save_message(
-            message_id=message_id,
-            chat_id=chat_id,
-            text=texto_original,
-            from_name=from_name
+        # Salvar no histórico
+        self._save_message(message_id, chat_id, texto, from_name)
 
-        )
-        return {
-            'chat_id': chat_id,
-            'texto_original': texto_original,
-            'message_id': message_id,
-            'from_name': from_name
-        }
-    def generate_gemini_response(self, prompt: str, chat_id: str, pdf_paths: list = None) -> str:
-        """Gera resposta usando Gemini com contexto da conversa"""
+        # Armazenar em pending_messages
+        self._save_pending_message(chat_id, {
+            'text': texto,
+            'timestamp': datetime.now(),
+            'message_id': message_id
+        })
+
+        # Iniciar verificação de timeout
+        self._check_pending_messages(chat_id)
+
+        return None  # Não processa imediatamente
+    
+    def _check_pending_messages(self, chat_id: str):
+        """Verifica se deve processar as mensagens acumuladas"""
+        doc_ref = self.db.collection("pending_messages").document(chat_id)
+
+        def process_if_ready(transaction):
+            doc = doc_ref.get(transaction=transaction)
+            if not doc.exists:
+                return
+
+            data = doc.to_dict()
+            if data['processing']:
+                return
+
+            timeout = (datetime.now() - data['last_update']).total_seconds()
+            if timeout >= self.pending_timeout:
+                transaction.update(doc_ref, {'processing': True})
+
+        # Usar transação para evitar race conditions
+        self.db.transaction(process_if_ready)
+        self._process_pending_messages(chat_id)
+
+    def _process_pending_messages(self, chat_id: str):
+        """Processa todas as mensagens acumuladas"""
         try:
-            # Adiciona contexto da conversa se existir
+            data = self._get_pending_messages(chat_id)
+            if not data or not data.get('messages'):
+                return
+    
+            # Ordenar mensagens por timestamp
+            messages = sorted(data['messages'], key=lambda x: x['timestamp'])
+            full_text = "\n".join([msg['text'] for msg in messages])
+            message_ids = [msg['message_id'] for msg in messages]
+    
+            # Gerar resposta
+            response_text = self.generate_gemini_response(full_text, chat_id)
+    
+            # Enviar resposta para a última mensagem
+            last_message_id = message_ids[-1]
+            self.send_whatsapp_message(chat_id, response_text, last_message_id)
+    
+            # Atualizar histórico e limpar pendentes
+            self.update_conversation_context(chat_id, full_text, response_text)
+            self._delete_pending_messages(chat_id)
+    
+        except Exception as e:
+            logger.error(f"Erro ao processar mensagens pendentes: {e}")
+            # Resetar processing flag
+            doc_ref = self.db.collection("pending_messages").document(chat_id)
+            doc_ref.update({'processing': False})
+
+    def generate_gemini_response(self, prompt: str, chat_id: str) -> str:
+        """Gera resposta considerando o contexto completo"""
+        try:
             full_prompt = self.build_context_prompt(chat_id, prompt)
-            
-            if not pdf_paths:
-                response = self.model.generate_content(full_prompt)
-                return response.text.strip()
-            
-            # Prepara o conteúdo com a estrutura correta
-            content = {"parts": [full_prompt]}
-            
-            uploaded_files = []
-            for path in pdf_paths:
-                file = genai.upload_file(path)
-                uploaded_files.append(file)
-                content["parts"].append({
-                    "file": file,
-                    "mime_type": "application/pdf"
-                })
-            
-            # Envia a requisição
-            response = self.model.generate_content(content)
-            
-            # Limpeza
-            for file in uploaded_files:
-                genai.delete_file(file.name)
-                
+            response = self.model.generate_content(full_prompt)
             return response.text.strip()
-        
         except Exception as e:
             logger.error(f"Erro no Gemini: {e}")
-            return "Desculpe, ocorreu um erro ao processar sua mensagem. Por favor, tente novamente."
+            return "Desculpe, ocorreu um erro. Por favor, reformule sua pergunta."
 
     def send_whatsapp_message(self, chat_id: str, text: str, reply_to: str) -> bool:
         """Envia mensagem formatada para o WhatsApp"""
@@ -272,12 +323,32 @@ class WhatsAppGeminiBot:
 
 
     def run(self):
-        """Aguarda mensagens via webhook (não faz mais polling)"""
+        """Inicia verificação periódica de mensagens pendentes"""
         try:
             while True:
-                time.sleep(1)  # Mantém o script vivo sem consumir CPU
+                self._check_all_pending_chats()
+                time.sleep(5)  # Verifica a cada 5 segundos
         except KeyboardInterrupt:
             logger.info("Bot encerrado")
+
+    def _check_all_pending_chats(self):
+        """Verifica todos os chats com mensagens pendentes"""
+        try:
+            now = datetime.now()
+            cutoff = now - timedelta(seconds=self.pending_timeout)
+
+            query = (
+                self.db.collection("pending_messages")
+                .where("last_update", "<=", cutoff)
+                .where("processing", "==", False)
+            )
+
+            docs = query.stream()
+            for doc in docs:
+                self._check_pending_messages(doc.id)
+
+        except Exception as e:
+            logger.error(f"Erro na verificação de chats pendentes: {e}")
 
 if __name__ == "__main__":
     try:

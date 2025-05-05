@@ -48,24 +48,7 @@ def handle_webhook():
                 not text_content):
                 continue
 
-            # Processa mensagem válida 
-            if processed := bot.process_whatsapp_message(message):
-                resposta = bot.generate_gemini_response(
-                    processed['texto_original'],
-                    processed['chat_id']
-                )
-                
-                # Envia resposta (sem verificação redundante)
-                bot.send_whatsapp_message(
-                    processed['chat_id'],
-                    resposta,
-                    processed['message_id']
-                )
-                bot.update_conversation_context(
-                    processed['chat_id'],
-                    processed['texto_original'],
-                    resposta
-                )
+            bot.process_whatsapp_message(message)
 
 
         return jsonify({'status': 'success'}), 200
