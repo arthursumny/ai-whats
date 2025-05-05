@@ -26,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class WhatsAppGeminiBot:
-    PENDING_CHECK_INTERVAL = 5
+    PENDING_CHECK_INTERVAL = 10
     REENGAGEMENT_TIMEOUT = 43200  # 12 horas em segundos
     REENGAGEMENT_MESSAGES = [
         "Oi!Está tudo bem por aí? Posso ajudar com algo?",
@@ -41,7 +41,7 @@ class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai")
-        self.pending_timeout = 60  # Timeout para mensagens pendentes (em segundos)
+        self.pending_timeout = 35  # Timeout para mensagens pendentes (em segundos)
         
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
@@ -107,8 +107,7 @@ class WhatsAppGeminiBot:
                 .limit_to_last(limit)
             )
 
-            # Substitua .stream() por .get()
-            docs = query.get()  # Isso resolve o erro
+            docs = query.get() 
 
             return [{
                 'message_text': doc.get('message_text'),
