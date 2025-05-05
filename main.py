@@ -29,7 +29,7 @@ class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai")
-        self.pending_timeout = 45  # Timeout para mensagens pendentes (em segundos)
+        self.pending_timeout = 60  # Timeout para mensagens pendentes (em segundos)
         
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
@@ -337,7 +337,7 @@ class WhatsAppGeminiBot:
         try:
             while True:
                 self._check_all_pending_chats()
-                time.sleep(5)  # Verifica a cada 5 segundos
+                time.sleep(30)  # Verifica a cada 30 segundos
         except KeyboardInterrupt:
             logger.info("Bot encerrado")
 
