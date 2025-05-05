@@ -26,6 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class WhatsAppGeminiBot:
+    PENDING_CHECK_INTERVAL = 5
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai")
@@ -243,10 +244,9 @@ class WhatsAppGeminiBot:
         """Verifica se deve processar as mensagens acumuladas"""
         doc_ref = self.db.collection("pending_messages").document(chat_id)
 
-        # Função transacional com decorador correto
-        @firestore.transactional
-        def process_if_ready(transaction):
-            doc = doc_ref.get(transaction=transaction)
+        try:
+            # Verifica sem transação primeiro para evitar locks desnecessários
+            doc = doc_ref.get()
             if not doc.exists:
                 return
 
@@ -254,49 +254,58 @@ class WhatsAppGeminiBot:
             if data.get('processing', False):
                 return
 
-            last_update = data['last_update'].replace(tzinfo=timezone.utc)  # Converte para UTC
-            now = datetime.now(timezone.utc)  # Data atual com timezone
-            timeout = (now - last_update).total_seconds()
-            if timeout >= self.pending_timeout:
-                transaction.update(doc_ref, {'processing': True})
+            last_update = data['last_update']
+            if isinstance(last_update, datetime):
+                last_update = last_update.replace(tzinfo=timezone.utc)
 
-        try:
-            # Cria transação e executa
-            transaction = self.db.transaction()
-            process_if_ready(transaction)
-            self._process_pending_messages(chat_id)
+            now = datetime.now(timezone.utc)
+            timeout = (now - last_update).total_seconds()
+
+            if timeout >= self.pending_timeout:
+                # Marca como processando ANTES de processar
+                doc_ref.update({'processing': True})
+                self._process_pending_messages(chat_id)
+
         except Exception as e:
-            logger.error(f"Erro na transação: {e}")
-            # Reset do estado se necessário
+            logger.error(f"Erro ao verificar mensagens pendentes: {e}")
             doc_ref.update({'processing': False})
 
     def _process_pending_messages(self, chat_id: str):
         """Processa todas as mensagens acumuladas"""
+        doc_ref = self.db.collection("pending_messages").document(chat_id)
+
         try:
-            data = self._get_pending_messages(chat_id)
-            if not data or not data.get('messages'):
+            doc = doc_ref.get()
+            if not doc.exists:
                 return
-    
+
+            data = doc.to_dict()
+            messages = data.get('messages', [])
+
+            if not messages:
+                doc_ref.delete()
+                return
+
             # Ordenar mensagens por timestamp
-            messages = sorted(data['messages'], key=lambda x: x['timestamp'])
+            messages = sorted(messages, key=lambda x: x['timestamp'])
             full_text = "\n".join([msg['text'] for msg in messages])
             message_ids = [msg['message_id'] for msg in messages]
-    
+
             # Gerar resposta
             response_text = self.generate_gemini_response(full_text, chat_id)
-    
+
             # Enviar resposta para a última mensagem
             last_message_id = message_ids[-1]
             self.send_whatsapp_message(chat_id, response_text, last_message_id)
-    
-            # Atualizar histórico e limpar pendentes
+
+            # Atualizar histórico
             self.update_conversation_context(chat_id, full_text, response_text)
-            self._delete_pending_messages(chat_id)
-    
+
+            # Limpar pendentes APÓS processar com sucesso
+            doc_ref.delete()
+
         except Exception as e:
             logger.error(f"Erro ao processar mensagens pendentes: {e}")
-            # Resetar processing flag
-            doc_ref = self.db.collection("pending_messages").document(chat_id)
             doc_ref.update({'processing': False})
 
     def generate_gemini_response(self, prompt: str, chat_id: str) -> str:
@@ -335,11 +344,19 @@ class WhatsAppGeminiBot:
     def run(self):
         """Inicia verificação periódica de mensagens pendentes"""
         try:
+            logger.info("Iniciando loop principal de verificação...")
             while True:
-                self._check_all_pending_chats()
-                time.sleep(30)  # Verifica a cada 30 segundos
+                try:
+                    self._check_all_pending_chats()
+                except Exception as e:
+                    logger.error(f"Erro na verificação de chats: {e}")
+                
+                time.sleep(self.PENDING_CHECK_INTERVAL)
+                
         except KeyboardInterrupt:
             logger.info("Bot encerrado")
+        except Exception as e:
+            logger.error(f"Erro fatal no loop principal: {e}")
 
     def _check_all_pending_chats(self):
         """Verifica todos os chats com mensagens pendentes"""
