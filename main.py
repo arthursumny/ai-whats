@@ -275,37 +275,48 @@ class WhatsAppGeminiBot:
         doc_ref = self.db.collection("pending_messages").document(chat_id)
 
         try:
+            logger.info(f"Iniciando processamento para {chat_id}")
+
             doc = doc_ref.get()
             if not doc.exists:
+                logger.warning(f"Chat {chat_id} não encontrado")
                 return
 
             data = doc.to_dict()
             messages = data.get('messages', [])
 
             if not messages:
+                logger.warning(f"Nenhuma mensagem pendente para {chat_id}")
                 doc_ref.delete()
                 return
 
-            # Ordenar mensagens por timestamp
+            logger.info(f"Processando {len(messages)} mensagens para {chat_id}")
+
+            # Ordenar e concatenar mensagens
             messages = sorted(messages, key=lambda x: x['timestamp'])
             full_text = "\n".join([msg['text'] for msg in messages])
             message_ids = [msg['message_id'] for msg in messages]
 
             # Gerar resposta
+            logger.info(f"Gerando resposta Gemini para {chat_id}")
             response_text = self.generate_gemini_response(full_text, chat_id)
+            logger.info(f"Resposta gerada: {response_text[:50]}...")
 
-            # Enviar resposta para a última mensagem
+            # Enviar resposta
             last_message_id = message_ids[-1]
-            self.send_whatsapp_message(chat_id, response_text, last_message_id)
+            logger.info(f"Enviando resposta para {chat_id} (reply_to: {last_message_id})")
+            if self.send_whatsapp_message(chat_id, response_text, last_message_id):
+                logger.info("Mensagem enviada com sucesso")
+            else:
+                logger.error("Falha ao enviar mensagem")
 
             # Atualizar histórico
             self.update_conversation_context(chat_id, full_text, response_text)
-
-            # Limpar pendentes APÓS processar com sucesso
             doc_ref.delete()
+            logger.info(f"Processamento concluído para {chat_id}")
 
         except Exception as e:
-            logger.error(f"Erro ao processar mensagens pendentes: {e}")
+            logger.error(f"ERRO CRÍTICO ao processar {chat_id}: {str(e)}", exc_info=True)
             doc_ref.update({'processing': False})
 
     def generate_gemini_response(self, prompt: str, chat_id: str) -> str:
@@ -320,24 +331,33 @@ class WhatsAppGeminiBot:
 
     def send_whatsapp_message(self, chat_id: str, text: str, reply_to: str) -> bool:
         """Envia mensagem formatada para o WhatsApp"""
+        if not text or not chat_id:
+            logger.error("Dados inválidos para envio")
+            return False
+    
         payload = {
             "to": chat_id,
             "body": text,
             "reply": reply_to
         }
-
+    
         try:
+            logger.info(f"Enviando para WHAPI: {payload}")
             response = requests.post(
                 "https://gate.whapi.cloud/messages/text",
                 headers={
                     "Authorization": f"Bearer {self.whapi_api_key}",
                     "Content-Type": "application/json"
                 },
-                json=payload
+                json=payload,
+                timeout=10
             )
+            
+            logger.info(f"Resposta WHAPI: {response.status_code} - {response.text}")
             return response.status_code == 200
+            
         except Exception as e:
-            logger.error(f"Erro ao enviar mensagem: {e}")
+            logger.error(f"Falha no envio: {str(e)}")
             return False
 
 
@@ -350,9 +370,9 @@ class WhatsAppGeminiBot:
                     self._check_all_pending_chats()
                 except Exception as e:
                     logger.error(f"Erro na verificação de chats: {e}")
-                
+
                 time.sleep(self.PENDING_CHECK_INTERVAL)
-                
+
         except KeyboardInterrupt:
             logger.info("Bot encerrado")
         except Exception as e:
@@ -364,6 +384,8 @@ class WhatsAppGeminiBot:
             now = datetime.now(timezone.utc)
             cutoff = now - timedelta(seconds=self.pending_timeout)
 
+            logger.info(f"Verificando mensagens pendentes (cutoff: {cutoff})")
+
             query = (
                 self.db.collection("pending_messages")
                 .where("last_update", "<=", cutoff)
@@ -371,15 +393,28 @@ class WhatsAppGeminiBot:
             )
 
             docs = query.stream()
+            count = 0
+
             for doc in docs:
+                count += 1
+                logger.info(f"Processando chat pendente: {doc.id}")
                 self._check_pending_messages(doc.id)
 
+            logger.info(f"Total de chats pendentes processados: {count}")
+
         except Exception as e:
-            logger.error(f"Erro na verificação de chats pendentes: {e}")
+            logger.error(f"Erro na verificação de chats pendentes: {e}", exc_info=True)
+
+bot = WhatsAppGeminiBot()
+
+from threading import Thread
+bot_thread = Thread(target=bot.run, daemon=True)
+bot_thread.start()
 
 if __name__ == "__main__":
     try:
-        bot = WhatsAppGeminiBot()
-        bot.run()
+        bot_thread.join()
+    except KeyboardInterrupt:
+        logger.info("Bot encerrado")
     except Exception as e:
         logger.error(f"Falha ao iniciar o bot: {e}")
