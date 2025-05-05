@@ -242,23 +242,27 @@ class WhatsAppGeminiBot:
     def _check_pending_messages(self, chat_id: str):
         """Verifica se deve processar as mensagens acumuladas"""
         doc_ref = self.db.collection("pending_messages").document(chat_id)
-
+    
+        # Função de transação corrigida
         def process_if_ready(transaction):
             doc = doc_ref.get(transaction=transaction)
             if not doc.exists:
                 return
-
+    
             data = doc.to_dict()
             if data['processing']:
                 return
-
+    
             timeout = (datetime.now() - data['last_update']).total_seconds()
             if timeout >= self.pending_timeout:
                 transaction.update(doc_ref, {'processing': True})
-
-        # Usar transação para evitar race conditions
-        self.db.transaction(process_if_ready)
-        self._process_pending_messages(chat_id)
+    
+        # Chamada correta da transação
+        try:
+            self.db.run_transaction(process_if_ready)  # <--- Alteração aqui
+            self._process_pending_messages(chat_id)
+        except Exception as e:
+            logger.error(f"Erro na transação: {e}")
 
     def _process_pending_messages(self, chat_id: str):
         """Processa todas as mensagens acumuladas"""
