@@ -88,26 +88,31 @@ class WhatsAppGeminiBot:
         })
 
     def _save_conversation_history(self, chat_id: str, message_text: str, is_bot: bool):
-        """Armazena o histórico da conversa no Firestore"""
-        col_ref = self.db.collection("conversation_history")
-        col_ref.add({
-            "chat_id": chat_id,
-            "message_text": message_text,
-            "is_bot": is_bot,
-            "timestamp": firestore.SERVER_TIMESTAMP
-        })
+        """Armazena o histórico da conversa no Firestore."""
+        try:
+            col_ref = self.db.collection("conversation_history")
+            col_ref.add({
+                "chat_id": chat_id,
+                "message_text": message_text,
+                "is_bot": is_bot,
+                "timestamp": firestore.SERVER_TIMESTAMP,
+                "summarized": False  # Marca como não resumido
+            })
+        except Exception as e:
+            logger.error(f"Erro ao salvar histórico para o chat {chat_id}: {e}")
 
     def _get_conversation_history(self, chat_id: str, limit: int = 500) -> List[Dict[str, Any]]:
-        """Obtém histórico ordenado cronologicamente (corrigido)"""
+        """Obtém histórico ordenado cronologicamente, excluindo mensagens já resumidas."""
         try:
             query = (
                 self.db.collection("conversation_history")
                 .where("chat_id", "==", chat_id)
+                .where("summarized", "==", False)  # Exclui mensagens já resumidas
                 .order_by("timestamp", direction=firestore.Query.ASCENDING)
                 .limit_to_last(limit)
             )
 
-            docs = query.get() 
+            docs = query.get()
 
             return [{
                 'message_text': doc.get('message_text'),
@@ -172,30 +177,36 @@ class WhatsAppGeminiBot:
             logger.error(f"Erro ao atualizar contexto: {e}")
 
     def build_context_prompt(self, chat_id: str, current_prompt: str) -> str:
-        """Constrói o prompt com histórico formatado corretamente"""
+        """Constrói o prompt com histórico formatado corretamente, incluindo o resumo."""
         try:
-            history = self._get_conversation_history(chat_id, limit=500)  # Reduzido para melhor performance
-            
-            if not history:
+            # Buscar o resumo do Firestore
+            summary_ref = self.db.collection("conversation_summaries").document(chat_id)
+            summary_doc = summary_ref.get()
+            summary = summary_doc.get("summary") if summary_doc.exists else ""
+
+            # Obter o histórico da conversa (apenas mensagens não resumidas)
+            history = self._get_conversation_history(chat_id, limit=500)
+
+            if not history and not summary:
                 return current_prompt
 
-            # Ordena cronologicamente e formata
+            # Ordenar cronologicamente e formatar o histórico
             sorted_history = sorted(history, key=lambda x: x['timestamp'])
-            
             context_str = "\n".join(
-                f"{'Usuário' if not msg['is_bot'] else 'Assistente'}: {msg['message_text']}" 
+                f"{'Usuário' if not msg['is_bot'] else 'Assistente'}: {msg['message_text']}"
                 for msg in sorted_history
             )
-            
+
+            # Construir o prompt final
             return (
-                "Histórico da conversa:\n"
-                f"{context_str}\n\n"
+                f"Resumo da conversa:\n{summary}\n\n"
+                f"Histórico da conversa:\n{context_str}\n\n"
                 "Nova mensagem para responder:\n"
                 f"Usuário: {current_prompt}"
             )
-            
+
         except Exception as e:
-            logger.error(f"Erro ao construir contexto: {e}")
+            logger.error(f"Erro ao construir contexto para o chat {chat_id}: {e}")
             return current_prompt
     
     def test_whapi_connection(self):
@@ -422,6 +433,58 @@ class WhatsAppGeminiBot:
             logger.error(f"Falha no envio: {str(e)}")
             return False
 
+    def _summarize_chat_history(self, chat_id: str):
+        """Gera um resumo das últimas 100 mensagens e marca como resumidas."""
+        try:
+            # Obter as últimas 100 mensagens não resumidas
+            query = (
+                self.db.collection("conversation_history")
+                .where("chat_id", "==", chat_id)
+                .where("summarized", "==", False)  # Apenas mensagens não resumidas
+                .order_by("timestamp", direction=firestore.Query.ASCENDING)
+                .limit(100)
+            )
+            docs = query.get()
+
+            if len(docs) < 100:
+                logger.info(f"Chat {chat_id} ainda não possui 100 mensagens não resumidas.")
+                return
+
+            # Concatenar mensagens para enviar ao Gemini
+            messages = [
+                f"{'Usuário' if not doc.get('is_bot') else 'Assistente'}: {doc.get('message_text')}"
+                for doc in docs
+            ]
+            full_text = "\n".join(messages)
+
+            # Gerar resumo com o Gemini
+            logger.info(f"Gerando resumo para o chat {chat_id}")
+            summary_prompt = (
+                "Resuma as informações importantes das mensagens abaixo, incluindo nomes, "
+                "acontecimentos, eventos importantes, sentimentos e outros detalhes pessoais:\n\n"
+                f"{full_text}"
+            )
+            response = self.model.generate_content(summary_prompt)
+            summary = response.text.strip()
+
+            # Armazenar o resumo no Firestore
+            summary_ref = self.db.collection("conversation_summaries").document(chat_id)
+            summary_ref.set({
+                "summary": summary,
+                "last_updated": firestore.SERVER_TIMESTAMP
+            })
+            logger.info(f"Resumo gerado e armazenado para o chat {chat_id}")
+
+            # Marcar as mensagens como resumidas
+            batch = self.db.batch()
+            for doc in docs:
+                doc_ref = doc.reference
+                batch.update(doc_ref, {"summarized": True})
+            batch.commit()
+            logger.info(f"Mensagens marcadas como resumidas para o chat {chat_id}")
+
+        except Exception as e:
+            logger.error(f"Erro ao gerar resumo para o chat {chat_id}: {e}", exc_info=True)
 
     def run(self):
         """Inicia verificação periódica de mensagens pendentes"""
