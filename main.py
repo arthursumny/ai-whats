@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Carrega variáveis do .env
 load_dotenv()
@@ -51,7 +51,7 @@ class WhatsAppGeminiBot:
 
         doc_ref.set({
             'messages': messages,
-            'last_update': datetime.now(),
+            'last_update': datetime.now(timezone.utc),
             'processing': False  # evitar processamento duplicado
         })
 
@@ -230,7 +230,7 @@ class WhatsAppGeminiBot:
         # Armazenar em pending_messages
         self._save_pending_message(chat_id, {
             'text': texto,
-            'timestamp': datetime.now(),
+            'timestamp': datetime.now(timezone.utc),
             'message_id': message_id
         })
 
@@ -242,22 +242,24 @@ class WhatsAppGeminiBot:
     def _check_pending_messages(self, chat_id: str):
         """Verifica se deve processar as mensagens acumuladas"""
         doc_ref = self.db.collection("pending_messages").document(chat_id)
-    
+
         # Função transacional com decorador correto
         @firestore.transactional
         def process_if_ready(transaction):
             doc = doc_ref.get(transaction=transaction)
             if not doc.exists:
                 return
-    
+
             data = doc.to_dict()
             if data.get('processing', False):
                 return
-    
-            timeout = (datetime.now() - data['last_update']).total_seconds()
+
+            last_update = data['last_update'].replace(tzinfo=timezone.utc)  # Converte para UTC
+            now = datetime.now(timezone.utc)  # Data atual com timezone
+            timeout = (now - last_update).total_seconds()
             if timeout >= self.pending_timeout:
                 transaction.update(doc_ref, {'processing': True})
-    
+
         try:
             # Cria transação e executa
             transaction = self.db.transaction()
@@ -342,7 +344,7 @@ class WhatsAppGeminiBot:
     def _check_all_pending_chats(self):
         """Verifica todos os chats com mensagens pendentes"""
         try:
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             cutoff = now - timedelta(seconds=self.pending_timeout)
 
             query = (
