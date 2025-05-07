@@ -239,31 +239,6 @@ class WhatsAppGeminiBot:
             logger.error(f"Falha na conexão com Gemini: {e}")
             raise
 
-    def _delete_is_bot_true(self):
-        """Deleta todas as mensagens de todas as coleções onde is_bot = True."""
-        try:
-            # Lista de coleções relevantes
-            collections_to_check = ["conversation_history", "pending_messages", "processed_messages"]
-
-            for collection_name in collections_to_check:
-                logger.info(f"Verificando coleção: {collection_name}")
-                collection_ref = self.db.collection(collection_name)
-
-                # Consulta para encontrar documentos onde is_bot = True
-                query = collection_ref.where("is_bot", "==", True)
-                docs = query.stream()
-
-                # Deletar documentos encontrados
-                count = 0
-                for doc in docs:
-                    doc.reference.delete()
-                    count += 1
-
-                logger.info(f"Total de documentos deletados na coleção {collection_name}: {count}")
-
-        except Exception as e:
-            logger.error(f"Erro ao deletar mensagens com is_bot = True: {e}", exc_info=True)
-
     def process_whatsapp_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Armazena mensagem temporariamente e inicia timer"""
         logger.info(f"Mensagem recebida: {message}")
@@ -435,7 +410,6 @@ class WhatsAppGeminiBot:
 
     def send_whatsapp_message(self, chat_id: str, text: str, reply_to: str) -> bool:
         """Envia mensagem formatada para o WhatsApp"""
-        self._delete_is_bot_true()
         if not text or not chat_id:
             logger.error("Dados inválidos para envio")
             return False
