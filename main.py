@@ -501,8 +501,7 @@ class WhatsAppGeminiBot:
             summary_ref.set({
                 "summary": summary,
                 "last_updated": firestore.SERVER_TIMESTAMP
-            })ERROR - Erro ao buscar histórico: "'message_text' is not contained in the data"
-            logger.info(f"Resumo gerado e armazenado para o chat {chat_id}")
+            })
 
             # Marcar as mensagens como resumidas
             batch = self.db.batch()
