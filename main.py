@@ -199,9 +199,9 @@ class WhatsAppGeminiBot:
 
             # Construir o prompt final
             return (
-                f"Resumo da conversa:\n{summary}\n\n"
-                f"Histórico da conversa:\n{context_str}\n\n"
-                "Nova mensagem para responder:\n"
+                f"### Resumo da conversa ###\n{summary}\n\n"
+                f"### Histórico da conversa ###\n{context_str}\n\n"
+                "### Nova mensagem ###\n"
                 f"Usuário: {current_prompt}"
             )
 
@@ -396,6 +396,7 @@ class WhatsAppGeminiBot:
         """Gera resposta considerando o contexto completo"""
         try:
             full_prompt = self.build_context_prompt(chat_id, prompt)
+            logger.info(f"Prompt enviado ao Gemini:\n{full_prompt}")
             response = self.model.generate_content(full_prompt)
             return response.text.strip()
         except Exception as e:
