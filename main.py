@@ -26,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class WhatsAppGeminiBot:
-    PENDING_CHECK_INTERVAL = 10
+    PENDING_CHECK_INTERVAL = 5
     REENGAGEMENT_TIMEOUT = 43200  # 12 horas em segundos
     REENGAGEMENT_MESSAGES = [
         "Oi!Está tudo bem por aí? Posso ajudar com algo?",
@@ -401,7 +401,6 @@ class WhatsAppGeminiBot:
         """Gera resposta considerando o contexto completo"""
         try:
             full_prompt = self.build_context_prompt(chat_id, prompt)
-            logger.info(f"Prompt enviado ao Gemini:\n{full_prompt}")
             response = self.model.generate_content(full_prompt)
             return response.text.strip()
         except Exception as e:
