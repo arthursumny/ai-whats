@@ -90,14 +90,15 @@ class WhatsAppGeminiBot:
     def _save_conversation_history(self, chat_id: str, message_text: str, is_bot: bool):
         """Armazena o histórico da conversa no Firestore."""
         try:
-            col_ref = self.db.collection("conversation_history")
-            col_ref.add({
-                "chat_id": chat_id,
-                "message_text": message_text,
-                "is_bot": is_bot,
-                "timestamp": firestore.SERVER_TIMESTAMP,
-                "summarized": False  # Marca como não resumido
-            })
+            # Armazena apenas mensagens do usuário
+            if not is_bot:
+                col_ref = self.db.collection("conversation_history")
+                col_ref.add({
+                    "chat_id": chat_id,
+                    "message_text": message_text,
+                    "timestamp": firestore.SERVER_TIMESTAMP,
+                    "summarized": False  # Marca como não resumido
+                })
         except Exception as e:
             logger.error(f"Erro ao salvar histórico para o chat {chat_id}: {e}")
 
@@ -116,7 +117,6 @@ class WhatsAppGeminiBot:
 
             return [{
                 'message_text': doc.get('message_text'),
-                'is_bot': doc.get('is_bot'),
                 'timestamp': doc.get('timestamp').timestamp() if doc.get('timestamp') else None
             } for doc in docs]
 
@@ -163,7 +163,6 @@ class WhatsAppGeminiBot:
         try:
             # Salva histórico no Firestore
             self._save_conversation_history(chat_id, user_message, False)
-            self._save_conversation_history(chat_id, bot_response, True)
             
             # Atualiza último contexto
             context_ref = self.db.collection("conversation_contexts").document(chat_id)
@@ -193,8 +192,7 @@ class WhatsAppGeminiBot:
             # Ordenar cronologicamente e formatar o histórico
             sorted_history = sorted(history, key=lambda x: x['timestamp'])
             context_str = "\n".join(
-                f"{'Usuário' if not msg['is_bot'] else 'Assistente'}: {msg['message_text']}"
-                for msg in sorted_history
+                f"Usuário: {msg['message_text']}" for msg in sorted_history
             )
 
             # Construir o prompt final
@@ -452,17 +450,14 @@ class WhatsAppGeminiBot:
                 return
 
             # Concatenar mensagens para enviar ao Gemini
-            messages = [
-                f"{'Usuário' if not doc.get('is_bot') else 'Assistente'}: {doc.get('message_text')}"
-                for doc in docs
-            ]
+            messages = [doc.get('message_text') for doc in docs]
             full_text = "\n".join(messages)
 
             # Gerar resumo com o Gemini
             logger.info(f"Gerando resumo para o chat {chat_id}")
             summary_prompt = (
                 "Resuma as informações importantes das mensagens abaixo, incluindo nomes, "
-                "acontecimentos, eventos importantes, sentimentos e outros detalhes pessoais:\n\n"
+                "acontecimentos, eventos importantes, sentimentos, detalhes pessoais e o que você julgar importante:\n\n"
                 f"{full_text}"
             )
             response = self.model.generate_content(summary_prompt)
