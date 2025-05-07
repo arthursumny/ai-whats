@@ -41,7 +41,7 @@ class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai")
-        self.pending_timeout = 35  # Timeout para mensagens pendentes (em segundos)
+        self.pending_timeout = 30  # Timeout para mensagens pendentes (em segundos)
         
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
@@ -101,7 +101,7 @@ class WhatsAppGeminiBot:
         except Exception as e:
             logger.error(f"Erro ao salvar histórico para o chat {chat_id}: {e}")
 
-    def _get_conversation_history(self, chat_id: str, limit: int = 500) -> List[Dict[str, Any]]:
+    def _get_conversation_history(self, chat_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Obtém histórico ordenado cronologicamente, excluindo mensagens já resumidas."""
         try:
             query = (
@@ -497,7 +497,7 @@ class WhatsAppGeminiBot:
                     self._check_all_pending_chats()
 
                     # Verifica chats inativos a cada hora
-                    if (now - last_check) > timedelta(hours=1):
+                    if (now - last_check) > timedelta(hours=12):
                         self._check_inactive_chats()
                         last_check = now
                 except Exception as e:
