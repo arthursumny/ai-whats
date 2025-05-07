@@ -112,13 +112,20 @@ class WhatsAppGeminiBot:
                 .order_by("timestamp", direction=firestore.Query.ASCENDING)
                 .limit_to_last(limit)
             )
-
             docs = query.get()
 
-            return [{
-                'message_text': doc.get('message_text'),
-                'timestamp': doc.get('timestamp').timestamp() if doc.get('timestamp') else None
-            } for doc in docs]
+            history = []
+            for doc in docs:
+                data = doc.to_dict()
+                if 'message_text' in data:  # Verifica se o campo 'message_text' existe
+                    history.append({
+                        'message_text': data['message_text'],
+                        'timestamp': data['timestamp'].timestamp() if data.get('timestamp') else None
+                    })
+                else:
+                    logger.warning(f"Documento ignorado (campo 'message_text' ausente): {doc.id}")
+
+            return history
 
         except Exception as e:
             logger.error(f"Erro ao buscar histórico: {e}")
@@ -428,7 +435,7 @@ class WhatsAppGeminiBot:
 
     def send_whatsapp_message(self, chat_id: str, text: str, reply_to: str) -> bool:
         """Envia mensagem formatada para o WhatsApp"""
-        self._delete_is_bot_true(self)
+        self._delete_is_bot_true()
         if not text or not chat_id:
             logger.error("Dados inválidos para envio")
             return False
@@ -494,7 +501,7 @@ class WhatsAppGeminiBot:
             summary_ref.set({
                 "summary": summary,
                 "last_updated": firestore.SERVER_TIMESTAMP
-            })
+            })ERROR - Erro ao buscar histórico: "'message_text' is not contained in the data"
             logger.info(f"Resumo gerado e armazenado para o chat {chat_id}")
 
             # Marcar as mensagens como resumidas
