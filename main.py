@@ -286,8 +286,23 @@ class WhatsAppGeminiBot:
             response = self.generate_gemini_response(prompt, chat_id)
             logger.info(f"Resposta do Gemini para lembrete: {response}")
 
-            # Enviar a resposta ao usuário
-            self.send_whatsapp_message(chat_id, response, None)
+            # Extrair detalhes do lembrete
+            details = self._extract_reminder_details(response)
+            if not details:
+                logger.warning(f"Não foi possível extrair detalhes do lembrete para o chat {chat_id}")
+                return
+
+            # Converter data e hora para datetime
+            reminder_time = datetime.strptime(f"{details['dia']} {details['horario']}", "%d/%m/%Y %H:%M")
+
+            # Determinar frequência
+            frequency = "once"
+            if "diariamente" in details["repetir"].lower():
+                frequency = "daily"
+            elif "semanalmente" in details["repetir"].lower():
+                frequency = "weekly"
+            elif "mensalmente" in details["repetir"].lower():
+                frequency = "monthly"
 
             # Salvar lembrete no Firestore
             reminder_ref = self.db.collection("reminders").document(chat_id)
@@ -295,13 +310,43 @@ class WhatsAppGeminiBot:
                 "chat_id": chat_id,
                 "user_message": user_message,
                 "gemini_response": response,
-                "created_at": firestore.SERVER_TIMESTAMP,
-                "status": "pending"  # Status inicial
+                "mensagem": details["mensagem"],
+                "reminder_time": reminder_time,
+                "frequency": frequency,
+                "status": "pending",  # Status inicial
+                "created_at": firestore.SERVER_TIMESTAMP
             })
             logger.info(f"Lembrete salvo no Firestore para o chat {chat_id}")
 
+            # Enviar a resposta ao usuário
+            self.send_whatsapp_message(chat_id, response, None)
+
         except Exception as e:
             logger.error(f"Erro ao processar pedido de lembrete para {chat_id}: {e}")
+
+    def _extract_reminder_details(self, gemini_response: str) -> Dict[str, Any]:
+        """Extrai detalhes do lembrete da resposta do Gemini."""
+        try:
+            # Regex para capturar os campos
+            match = re.search(
+                r"Anotado:\s*(?P<mensagem>.+?)\s+às\s+(?P<horario>\d{2}:\d{2})\s+no\s+dia\s+(?P<dia>\d{2}/\d{2}/\d{4})\s+(?P<repetir>.+)",
+                gemini_response
+            )
+            if not match:
+                logger.warning(f"Formato inesperado na resposta do Gemini: {gemini_response}")
+                return {}
+
+            # Extrair os grupos nomeados
+            return {
+                "mensagem": match.group("mensagem"),
+                "horario": match.group("horario"),
+                "dia": match.group("dia"),
+                "repetir": match.group("repetir")
+            }
+
+        except Exception as e:
+            logger.error(f"Erro ao extrair detalhes do lembrete: {e}")
+            return {}
 
     def _check_pending_messages(self, chat_id: str):
         """Verifica se deve processar as mensagens acumuladas"""
@@ -535,10 +580,10 @@ class WhatsAppGeminiBot:
             for doc in docs:
                 reminder = doc.to_dict()
                 chat_id = reminder["chat_id"]
-                gemini_response = reminder["gemini_response"]
+                mensagem = reminder["mensagem"]
 
                 # Enviar lembrete ao usuário
-                self.send_whatsapp_message(chat_id, gemini_response, None)
+                self.send_whatsapp_message(chat_id, f"Lembrete: {mensagem}", None)
                 logger.info(f"Lembrete enviado para o chat {chat_id}")
 
                 # Atualizar ou apagar lembrete
