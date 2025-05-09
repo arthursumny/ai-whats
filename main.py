@@ -30,10 +30,10 @@ class WhatsAppGeminiBot:
     REENGAGEMENT_TIMEOUT = 43200  # 12 horas em segundos
     REENGAGEMENT_MESSAGES = [
         "Oi!Está tudo bem por aí? Posso ajudar com algo?",
-        "Estava pensando em você! Como posso ajudar?",
-        "Oi! Espero que esteja tudo certo. Estou aqui se precisar de algo!",
+        "Estava pensando em você! Está tudo bem?",
+        "Olá! Espero que esteja tudo certo. Estou aqui se precisar de algo!",
         "Oi, tudo bem? Se quiser conversar comigo, estou à disposição!",
-        "Oi! Como posso ajudar você hoje?",
+        "Oi! Está afim de conversar?",
         "Oi! Estou aqui para ajudar. Como posso ser útil?",
         "Oi! Se precisar de algo, estou por aqui.",
         "Oi! Estou aqui para ajudar. O que você precisa?",
@@ -240,7 +240,7 @@ class WhatsAppGeminiBot:
             raise
 
     def process_whatsapp_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Armazena mensagem temporariamente e inicia timer"""
+        """Processa mensagens recebidas e identifica pedidos de lembrete."""
         logger.info(f"Mensagem recebida: {message}")
 
         message_id = message.get('id')
@@ -249,7 +249,14 @@ class WhatsAppGeminiBot:
 
         chat_id = message.get('chat_id')
         from_name = message.get('from_name')
-        texto = message.get('text', {}).get('body', '').strip()
+        texto = message.get('text', {}).get('body', '').strip().lower()
+
+        # Gatilho para lembretes
+        reminder_keywords = ["lembrete", "lembrar", "agendar", "me lembre", "agende"]
+        if any(keyword in texto for keyword in reminder_keywords):
+            logger.info(f"Identificado possível pedido de lembrete no chat {chat_id}")
+            self._handle_reminder_request(chat_id, texto)
+            return None
 
         # Salvar no histórico
         self._save_message(message_id, chat_id, texto, from_name)
@@ -265,7 +272,37 @@ class WhatsAppGeminiBot:
         self._check_pending_messages(chat_id)
 
         return None  # Não processa imediatamente
-    
+
+    def _handle_reminder_request(self, chat_id: str, user_message: str):
+        """Interage com o Gemini para confirmar e configurar um lembrete."""
+        try:
+            # Prompt para o Gemini
+            prompt = (
+                f"Usuário enviou a mensagem: '{user_message}'. "
+                "Caso você detecte que o usuário quer adicionar um lembrete, faça as perguntas necessárias "
+                "para coletar informações como data, horário, frequência (única vez, diária, semanal) e a mensagem do lembrete. "
+                "Confirme o lembrete com uma mensagem clara no formato ideal para que ele seja processado pelo script."
+            )
+            response = self.generate_gemini_response(prompt, chat_id)
+            logger.info(f"Resposta do Gemini para lembrete: {response}")
+
+            # Enviar a resposta ao usuário
+            self.send_whatsapp_message(chat_id, response, None)
+
+            # Salvar lembrete no Firestore
+            reminder_ref = self.db.collection("reminders").document(chat_id)
+            reminder_ref.set({
+                "chat_id": chat_id,
+                "user_message": user_message,
+                "gemini_response": response,
+                "created_at": firestore.SERVER_TIMESTAMP,
+                "status": "pending"  # Status inicial
+            })
+            logger.info(f"Lembrete salvo no Firestore para o chat {chat_id}")
+
+        except Exception as e:
+            logger.error(f"Erro ao processar pedido de lembrete para {chat_id}: {e}")
+
     def _check_pending_messages(self, chat_id: str):
         """Verifica se deve processar as mensagens acumuladas"""
         doc_ref = self.db.collection("pending_messages").document(chat_id)
@@ -487,8 +524,57 @@ class WhatsAppGeminiBot:
         except Exception as e:
             logger.error(f"Erro ao gerar resumo para o chat {chat_id}: {e}", exc_info=True)
 
+    def _process_reminders(self):
+        """Verifica lembretes pendentes e envia notificações."""
+        try:
+            now = datetime.now(timezone.utc)
+            reminders_ref = self.db.collection("reminders")
+            query = reminders_ref.where("status", "==", "pending").where("reminder_time", "<=", now)
+
+            docs = query.stream()
+            for doc in docs:
+                reminder = doc.to_dict()
+                chat_id = reminder["chat_id"]
+                gemini_response = reminder["gemini_response"]
+
+                # Enviar lembrete ao usuário
+                self.send_whatsapp_message(chat_id, gemini_response, None)
+                logger.info(f"Lembrete enviado para o chat {chat_id}")
+
+                # Atualizar ou apagar lembrete
+                if reminder.get("frequency") == "once":
+                    doc.reference.delete()
+                    logger.info(f"Lembrete único apagado para o chat {chat_id}")
+                else:
+                    # Atualizar para a próxima data
+                    next_time = self._calculate_next_reminder(reminder)
+                    doc.reference.update({"reminder_time": next_time})
+                    logger.info(f"Lembrete atualizado para a próxima data no chat {chat_id}")
+
+        except Exception as e:
+            logger.error(f"Erro ao processar lembretes: {e}")
+
+    def _calculate_next_reminder(self, reminder: Dict[str, Any]) -> datetime:
+        """Calcula a próxima data para lembretes recorrentes."""
+        try:
+            reminder_time = reminder["reminder_time"]
+            frequency = reminder.get("frequency")
+
+            if frequency == "daily":
+                return reminder_time + timedelta(days=1)
+            elif frequency == "weekly":
+                return reminder_time + timedelta(weeks=1)
+            elif frequency == "monthly":
+                return reminder_time + timedelta(days=30)  # Aproximação
+            else:
+                return reminder_time  # Caso não seja recorrente
+
+        except Exception as e:
+            logger.error(f"Erro ao calcular próxima data do lembrete: {e}")
+            return reminder_time
+
     def run(self):
-        """Inicia verificação periódica de mensagens pendentes"""
+        """Inicia verificação periódica de mensagens pendentes e lembretes."""
         try:
             logger.info("Iniciando loop principal de verificação...")
             last_check = datetime.now(timezone.utc)
@@ -497,12 +583,16 @@ class WhatsAppGeminiBot:
                     now = datetime.now(timezone.utc)
                     self._check_all_pending_chats()
 
-                    # Verifica chats inativos a cada hora
+                    # Verifica lembretes a cada minuto
+                    self._process_reminders()
+
+                    # Verifica chats inativos a cada 12 horas
                     if (now - last_check) > timedelta(hours=12):
                         self._check_inactive_chats()
                         last_check = now
+
                 except Exception as e:
-                    logger.error(f"Erro na verificação de chats: {e}")
+                    logger.error(f"Erro na verificação de chats ou lembretes: {e}")
 
                 time.sleep(self.PENDING_CHECK_INTERVAL)
 
