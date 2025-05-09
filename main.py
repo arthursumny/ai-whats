@@ -327,22 +327,31 @@ class WhatsAppGeminiBot:
     def _extract_reminder_details(self, gemini_response: str) -> Dict[str, Any]:
         """Extrai detalhes do lembrete da resposta do Gemini."""
         try:
-            # Regex para capturar os campos
-            match = re.search(
-                r"Anotado:\s*(?P<mensagem>.+?)\s+às\s+(?P<horario>\d{2}:\d{2})\s+no\s+dia\s+(?P<dia>\d{2}/\d{2}/\d{4})\s+(?P<repetir>.+)",
-                gemini_response
-            )
-            if not match:
+            # Inicializar os detalhes do lembrete
+            details = {}
+
+            # Procurar pelos marcadores na resposta
+            lines = gemini_response.split("\n")
+            for line in lines:
+                if "**O quê?**" in line:
+                    details["mensagem"] = line.split("**O quê?**")[1].strip()
+                elif "**Quando?**" in line:
+                    details["dia"] = line.split("**Quando?**")[1].strip()
+                elif "**Horário?**" in line:
+                    details["horario"] = line.split("**Horário?**")[1].strip()
+                elif "**Frequência?**" in line:
+                    details["repetir"] = line.split("**Frequência?**")[1].strip()
+
+            # Validar se todos os campos necessários foram extraídos
+            if not all(key in details for key in ["mensagem", "dia", "horario", "repetir"]):
                 logger.warning(f"Formato inesperado na resposta do Gemini: {gemini_response}")
                 return {}
 
-            # Extrair os grupos nomeados
-            return {
-                "mensagem": match.group("mensagem"),
-                "horario": match.group("horario"),
-                "dia": match.group("dia"),
-                "repetir": match.group("repetir")
-            }
+            # Ajustar o campo "dia" se for "Hoje"
+            if details["dia"].lower() == "hoje":
+                details["dia"] = datetime.now().strftime("%d/%m/%Y")
+
+            return details
 
         except Exception as e:
             logger.error(f"Erro ao extrair detalhes do lembrete: {e}")
