@@ -684,7 +684,8 @@ class WhatsAppGeminiBot:
                 contents=[full_prompt_with_history],
                 config=GenerateContentConfig(
                     tools=[google_search_tool],
-                    response_modalities=["TEXT"]
+                    response_modalities=["TEXT"],
+                    system_instruction=self.gemini_context
                 )
             )
             
