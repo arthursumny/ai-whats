@@ -463,8 +463,10 @@ class WhatsAppGeminiBot:
 
                     
                         prompt_for_media = "Descreva este arquivo de forma concisa e objetiva."
-                        if msg_type == 'audio' or msg_type == 'voice':
+                        if msg_type == 'audio':
                             prompt_for_media = "Transcreva este áudio. Se não for possível transcrever, descreva o conteúdo do áudio de forma concisa."
+                        elif msg_type == 'voice':
+                            prompt_for_media = "Transcreva esta voz e descreva o conteúdo do voz de forma concisa. Ela faz parte da sua conversa e use também para dar um contexto."
                         
                         # Gerar descrição/transcrição
                         media_desc_response = self.client.models.generate_content(
@@ -475,9 +477,8 @@ class WhatsAppGeminiBot:
                         media_description = media_desc_response.text.strip()
                         
                         entry = f"Usuário enviou um(a) {msg_type}"
-                        if original_caption:
-                            entry += f" com a legenda '{original_caption}'"
                         entry += f": [Conteúdo processado da mídia: {media_description}]"
+                        logger.info(f": [Conteúdo processado da mídia: {media_description}]")
                         processed_texts_for_gemini.append(entry)
 
                     except requests.exceptions.RequestException as e_req:
@@ -502,13 +503,13 @@ class WhatsAppGeminiBot:
                                 
             # Consolidar todos os textos processados
             full_user_input_text = "\n".join(processed_texts_for_gemini).strip()
+            logger.info(f"Texto consolidado para Gemini ({chat_id}): {full_user_input_text[:200]}...")
 
             if not full_user_input_text:
                 logger.info(f"Nenhum texto processável após processar mensagens pendentes para {chat_id}. Limpando e saindo.")
                 self._delete_pending_messages(chat_id)
                 return # Não há nada para responder
 
-            logger.info(f"Texto consolidado para Gemini ({chat_id}): {full_user_input_text[:200]}...")
             
             # Gerar resposta do Gemini
             response_text = self.generate_gemini_response(full_user_input_text, chat_id)
