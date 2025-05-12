@@ -234,98 +234,79 @@ class WhatsAppGeminiBot:
             raise
 
     def process_whatsapp_message(self, message: Dict[str, Any]) -> None:
-        """
-        Processa a mensagem do WhatsApp, identifica tipo, extrai conteúdo
-        e salva como mensagem pendente.
-        """
         logger.info(f"Raw mensagem recebida: {message}")
-
+    
         message_id = message.get('id')
         if not message_id:
             logger.warning("Mensagem sem ID recebida, ignorando.")
             return
-
+    
         if self._message_exists(message_id):
             logger.info(f"Mensagem {message_id} já processada, ignorando.")
             return
-
+    
         chat_id = message.get('chat_id')
         from_name = message.get('from_name', 'Desconhecido')
-        
-        # Extração de conteúdo
+    
         msg_type_whapi = message.get('type', 'text')
-        text_body = None
-        media_url = message.get('media') # Campo primário para URL de mídia na Whapi
         caption = message.get('caption')
         mimetype = message.get('mimetype')
-
-        if 'text' in message and isinstance(message['text'], dict): # Estrutura comum para texto
+        text_body = ""
+    
+        # Texto
+        if 'text' in message and isinstance(message['text'], dict):
             text_body = message['text'].get('body', '')
-        elif 'body' in message and isinstance(message['body'], str): # Whapi às vezes manda body direto
-             text_body = message.get('body', '')
-        
-        # Se media_url estiver no body (caso raro, mas para robustez)
-        if not media_url and text_body and msg_type_whapi != 'text' and ('http://' in text_body or 'https://' in text_body):
-            # Heurística: se o tipo não é texto mas o body parece uma URL, pode ser a URL da mídia
-            # Isso é menos confiável, Whapi deveria usar o campo 'media'
-            logger.warning(f"Media URL encontrada no 'body' para msg_type {msg_type_whapi}. Usando-a.")
-            media_url = text_body # Assume que o corpo é a URL da mídia
-            # Se o body era a URL, não há 'texto' real a menos que haja caption.
-            text_body = "" # Limpa text_body se ele foi interpretado como media_url
-
-        # Determinar o tipo processado internamente e o conteúdo principal
+        elif 'body' in message and isinstance(message['body'], str):
+            text_body = message['body']
+    
+        # Lógica para mídia (imagem, áudio, etc.)
+        media_url = None
+        if msg_type_whapi == 'image' and 'image' in message:
+            media_url = message['image'].get('link')
+        elif msg_type_whapi in ['audio', 'ptt'] and 'audio' in message:
+            media_url = message['audio'].get('link')
+        elif msg_type_whapi == 'video' and 'video' in message:
+            media_url = message['video'].get('link')
+        elif msg_type_whapi == 'document' and 'document' in message:
+            media_url = message['document'].get('link')
+    
+        # Decidir tipo processado internamente e conteúdo principal
         processed_type_internal = 'text'
-        content_to_store = text_body if text_body else "" # Default para texto
-
+        content_to_store = text_body or ""
+    
         if media_url:
             if msg_type_whapi == 'image':
                 processed_type_internal = 'image'
                 content_to_store = media_url
-            elif msg_type_whapi in ['audio', 'ptt']: # ptt é Push-to-talk (áudio)
+            elif msg_type_whapi in ['audio', 'ptt']:
                 processed_type_internal = 'audio'
                 content_to_store = media_url
-            # Outros tipos (video, document) poderiam ser adicionados.
-            # Por agora, se tiverem media_url mas não forem image/audio,
-            # serão tratados como 'text' usando seu caption (se houver).
-            elif caption: # Se for outro tipo de mídia com caption
-                 content_to_store = caption # O "texto" é o caption
-                 logger.info(f"Mídia tipo {msg_type_whapi} com caption, tratando como texto '{caption}'. Mídia URL: {media_url}")
-            else: # Outro tipo de mídia sem caption
-                 logger.info(f"Mídia tipo {msg_type_whapi} sem caption, ignorando mídia por ora. URL: {media_url}")
-                 # Se não há caption, e não é imagem/audio, não há o que processar como texto inicial.
-                 # O _save_message abaixo irá registrar o tipo original da Whapi.
-                 pass # content_to_store permanece como string vazia se text_body era vazio
-        
-        # Texto para salvar no log de mensagens processadas (pode ser caption ou descrição futura)
-        # Inicialmente, é o texto ou legenda. Será atualizado se for mídia e for descrita.
-        text_for_processed_log = caption if media_url and caption else text_body if text_body else f"[{processed_type_internal} recebida]"
-
+            elif caption:
+                content_to_store = caption
+                logger.info(f"Mídia tipo {msg_type_whapi} com caption, tratando como texto '{caption}'. URL: {media_url}")
+            else:
+                logger.info(f"Mídia tipo {msg_type_whapi} sem caption, ignorando mídia. URL: {media_url}")
+                # não altera content_to_store nem o tipo se não tem caption
+    
+        text_for_processed_log = caption or text_body or f"[{processed_type_internal} recebida]"
         self._save_message(message_id, chat_id, text_for_processed_log, from_name, msg_type_whapi)
-
-        # Validar se há algo para colocar na fila pendente
+    
         if processed_type_internal == 'text' and not content_to_store.strip():
-            logger.info(f"Mensagem de texto vazia ou mídia não suportada sem caption para {chat_id}, ignorando adição à fila pendente.")
+            logger.info(f"Mensagem de texto vazia ou mídia não suportada sem caption para {chat_id}, ignorando.")
             return
-        if processed_type_internal != 'text' and not media_url:
-            logger.warning(f"Tipo {processed_type_internal} esperado mas sem media_url. Tentando tratar como texto: '{caption or text_body}'")
-            processed_type_internal = 'text'
-            content_to_store = caption or text_body or ""
-            if not content_to_store.strip():
-                logger.info(f"Após fallback para texto, conteúdo ainda vazio para {chat_id}, ignorando.")
-                return
-        
+    
         pending_payload = {
-            'type': processed_type_internal,    # 'text', 'audio', 'image'
-            'content': content_to_store,         # texto original ou media_url
-            'original_caption': caption,         # caption original da mídia
-            'mimetype': mimetype,                # mimetype original da Whapi
-            'timestamp': datetime.now(timezone.utc).isoformat(), # Use ISO format para Firestore
+            'type': processed_type_internal,
+            'content': content_to_store,
+            'original_caption': caption,
+            'mimetype': mimetype,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'message_id': message_id
         }
+    
         self._save_pending_message(chat_id, pending_payload)
-        # self._check_pending_messages(chat_id) # A verificação agora é feita pelo loop principal
         logger.info(f"Mensagem de {from_name} ({chat_id}) adicionada à fila pendente. Tipo: {processed_type_internal}.")
-        return
+
 
     def _check_pending_messages(self, chat_id: str):
         """Verifica se deve processar as mensagens acumuladas para um chat específico."""
