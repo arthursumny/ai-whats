@@ -680,11 +680,13 @@ class WhatsAppGeminiBot:
             logger.info(f"Prompt final para Gemini (chat {chat_id}): {full_prompt_with_history[:500]}...")
 
             # Configuração de geração, se precisar de mais controle (temperatura, etc.)
-            # generation_config = genai.types.GenerationConfig(temperature=0.7)
+            config = GenerationConfig(
+                tools=[self.search_tool],
+            )
 
             response = self.model.generate_content(
                 contents=[full_prompt_with_history], # `contents` deve ser uma lista
-                tools=[self.search_tool],   # Ativa a ferramenta de pesquisa
+                generation_config=config,   # Ativa a ferramenta de pesquisa
             ) 
             
             
