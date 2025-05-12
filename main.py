@@ -41,7 +41,7 @@ class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai") # Seu projeto
-        self.pending_timeout = 20  # Timeout para mensagens pendentes (em segundos)
+        self.pending_timeout = 25  # Timeout para mensagens pendentes (em segundos)
         
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
@@ -274,6 +274,9 @@ class WhatsAppGeminiBot:
         elif msg_type_whapi == 'document' and 'document' in message:
             media_url = message['document'].get('link')
             logger.info(f"Imagem recebida: {media_url}")
+        elif msg_type_whapi == 'voice' and 'voice' in message:
+            media_url = message['voice'].get('link')
+            logger.info(f"Imagem recebida: {media_url}")
 
         # Decidir tipo processado internamente e conteúdo principal
         processed_type_internal = 'text'
@@ -285,6 +288,9 @@ class WhatsAppGeminiBot:
                 content_to_store = media_url
             elif msg_type_whapi in ['audio', 'ptt']:
                 processed_type_internal = 'audio'
+                content_to_store = media_url
+            elif msg_type_whapi == 'voice':
+                processed_type_internal = 'voice'
                 content_to_store = media_url
             elif caption:
                 content_to_store = caption
@@ -416,7 +422,7 @@ class WhatsAppGeminiBot:
                 if msg_type == 'text':
                     if content and content.strip():
                         processed_texts_for_gemini.append(content.strip())
-                elif msg_type in ['audio', 'image']:
+                elif msg_type in ['audio', 'image', 'voice']:
                     media_url = content
                     if not mimetype:
                         # Tentar inferir mimetype da URL como último recurso (pouco confiável)
@@ -425,8 +431,8 @@ class WhatsAppGeminiBot:
                             file_ext = os.path.splitext(media_url.split('?')[0])[1].lower() # Remove query params
                             if file_ext == ".jpg" or file_ext == ".jpeg": mimetype = "image/jpeg"
                             elif file_ext == ".png": mimetype = "image/png"
-                            elif file_ext == ".mp3": mimetype = "audio/mpeg"
-                            elif file_ext == ".ogg": mimetype = "audio/ogg" # Comum para PTT
+                            elif file_ext == ".mp3": mimetype = "audio/mp3"
+                            elif file_ext == ".oga": mimetype = "audio/ogg" # Comum para PTT
                             elif file_ext == ".opus": mimetype = "audio/opus"
                             elif file_ext == ".wav": mimetype = "audio/wav"
                             else: logger.warning(f"Mimetype não fornecido e não pôde ser inferido da URL: {media_url}")
@@ -457,7 +463,7 @@ class WhatsAppGeminiBot:
 
                     
                         prompt_for_media = "Descreva este arquivo de forma concisa e objetiva."
-                        if msg_type == 'audio':
+                        if msg_type == 'audio' or msg_type == 'voice':
                             prompt_for_media = "Transcreva este áudio. Se não for possível transcrever, descreva o conteúdo do áudio de forma concisa."
                         
                         # Gerar descrição/transcrição
