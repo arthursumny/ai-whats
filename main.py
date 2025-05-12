@@ -683,9 +683,12 @@ class WhatsAppGeminiBot:
             # generation_config = genai.types.GenerationConfig(temperature=0.7)
 
             response = self.model.generate_content(
-                [full_prompt_with_history], # `contents` deve ser uma lista
+                contents=[full_prompt_with_history], # `contents` deve ser uma lista
                 tools=[self.search_tool],   # Ativa a ferramenta de pesquisa
-                # generation_config=generation_config 
+                config=GenerateContentConfig(
+                    tools=[self.search_tool],
+                    response_modalities=["TEXT"],
+                ) 
             )
             
             # Para extrair o texto da resposta quando tools são usadas:
