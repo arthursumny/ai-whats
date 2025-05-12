@@ -62,7 +62,6 @@ class WhatsAppGeminiBot:
         message_payload deve conter: type, content, original_caption, mimetype, timestamp, message_id
         """
         doc_ref = self.db.collection("pending_messages").document(chat_id)
-
         # Usar transação para garantir consistência ao adicionar mensagens
         @firestore.transactional
         def update_in_transaction(transaction, doc_ref, new_message):
@@ -676,7 +675,7 @@ class WhatsAppGeminiBot:
             # current_input_text é o texto já processado (incluindo descrições de mídia)
             full_prompt_with_history = self.build_context_prompt(chat_id, current_input_text)
             
-            logger.info(f"Prompt final para Gemini (chat {chat_id}): {full_prompt_with_history[:500]}...")
+            logger.info(f"Prompt final para Gemini (chat {chat_id})")
 
             google_search_tool = Tool(google_search=GoogleSearch())
 
@@ -688,7 +687,6 @@ class WhatsAppGeminiBot:
                     response_modalities=["TEXT"]
                 )
             )
-            
             
             # Para extrair o texto da resposta quando tools são usadas:
             # A API pode retornar partes diferentes. Precisamos do texto gerado.
@@ -702,7 +700,7 @@ class WhatsAppGeminiBot:
             if response.candidates and response.candidates[0].grounding_metadata:
                  search_entry = response.candidates[0].grounding_metadata.search_entry_point
                  if search_entry:
-                      logger.info(f"Gemini usou Google Search. Query: {search_entry.rendered_content if search_entry else 'N/A'}")
+                      logger.info(f"Gemini usou Google Search.")
 
 
             return generated_text.strip() if generated_text else "Desculpe, não consegui processar sua solicitação no momento."
