@@ -264,12 +264,16 @@ class WhatsAppGeminiBot:
         media_url = None
         if msg_type_whapi == 'image' and 'image' in message:
             media_url = message['image'].get('link')
+            logger.info(f"Imagem recebida: {media_url}")
         elif msg_type_whapi in ['audio', 'ptt'] and 'audio' in message:
             media_url = message['audio'].get('link')
+            logger.info(f"Imagem recebida: {media_url}")
         elif msg_type_whapi == 'video' and 'video' in message:
             media_url = message['video'].get('link')
+            logger.info(f"Imagem recebida: {media_url}")
         elif msg_type_whapi == 'document' and 'document' in message:
             media_url = message['document'].get('link')
+            logger.info(f"Imagem recebida: {media_url}")
 
         # Decidir tipo processado internamente e conteúdo principal
         processed_type_internal = 'text'
