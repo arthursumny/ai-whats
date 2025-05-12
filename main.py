@@ -159,15 +159,9 @@ class WhatsAppGeminiBot:
         try:
             genai.configure(api_key=self.gemini_api_key)
 
-            google_seach_tool = Tool(google_search=GoogleSearch())
-
             self.model = genai.GenerativeModel(
                 model_name=self.gemini_model_name,
                 system_instruction=self.gemini_context,
-                config=GenerateContentConfig(
-                    tools=[google_seach_tool],
-                    response_modalities=["TEXT"]
-                )
                 # Tools podem ser passadas aqui ou em cada chamada generate_content.
                 # Passar em cada chamada é mais flexível se nem todas precisarem.
             )
@@ -683,8 +677,13 @@ class WhatsAppGeminiBot:
             
             logger.info(f"Prompt final para Gemini (chat {chat_id}): {full_prompt_with_history[:500]}...")
 
+            google_seach_tool = Tool(google_search=GoogleSearch())
+
             response = self.model.generate_content(
                 contents=[full_prompt_with_history], # `contents` deve ser uma lista
+                config=GenerateContentConfig(
+                    tools=[google_seach_tool]
+                )
             ) 
             
             
