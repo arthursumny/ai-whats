@@ -160,7 +160,8 @@ class WhatsAppGeminiBot:
             self.client = genai.Client(api_key=self.gemini_api_key)
             
             self.model_config = types.GenerateContentConfig(
-            system_instruction=self.gemini_context
+                system_instruction=self.gemini_context,
+                temperature=0.7
             )
 
             logger.info(f"Configuração do Gemini com modelo {self.gemini_model_name} concluída.")
@@ -235,30 +236,30 @@ class WhatsAppGeminiBot:
 
     def process_whatsapp_message(self, message: Dict[str, Any]) -> None:
         logger.info(f"Raw mensagem recebida: {message}")
-    
+
         message_id = message.get('id')
         if not message_id:
             logger.warning("Mensagem sem ID recebida, ignorando.")
             return
-    
+
         if self._message_exists(message_id):
             logger.info(f"Mensagem {message_id} já processada, ignorando.")
             return
-    
+
         chat_id = message.get('chat_id')
         from_name = message.get('from_name', 'Desconhecido')
-    
+
         msg_type_whapi = message.get('type', 'text')
         caption = message.get('caption')
         mimetype = message.get('mimetype')
         text_body = ""
-    
+
         # Texto
         if 'text' in message and isinstance(message['text'], dict):
             text_body = message['text'].get('body', '')
         elif 'body' in message and isinstance(message['body'], str):
             text_body = message['body']
-    
+
         # Lógica para mídia (imagem, áudio, etc.)
         media_url = None
         if msg_type_whapi == 'image' and 'image' in message:
@@ -269,11 +270,11 @@ class WhatsAppGeminiBot:
             media_url = message['video'].get('link')
         elif msg_type_whapi == 'document' and 'document' in message:
             media_url = message['document'].get('link')
-    
+
         # Decidir tipo processado internamente e conteúdo principal
         processed_type_internal = 'text'
         content_to_store = text_body or ""
-    
+
         if media_url:
             if msg_type_whapi == 'image':
                 processed_type_internal = 'image'
@@ -287,14 +288,14 @@ class WhatsAppGeminiBot:
             else:
                 logger.info(f"Mídia tipo {msg_type_whapi} sem caption, ignorando mídia. URL: {media_url}")
                 # não altera content_to_store nem o tipo se não tem caption
-    
+
         text_for_processed_log = caption or text_body or f"[{processed_type_internal} recebida]"
         self._save_message(message_id, chat_id, text_for_processed_log, from_name, msg_type_whapi)
-    
+
         if processed_type_internal == 'text' and not content_to_store.strip():
             logger.info(f"Mensagem de texto vazia ou mídia não suportada sem caption para {chat_id}, ignorando.")
             return
-    
+
         pending_payload = {
             'type': processed_type_internal,
             'content': content_to_store,
@@ -303,7 +304,7 @@ class WhatsAppGeminiBot:
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'message_id': message_id
         }
-    
+
         self._save_pending_message(chat_id, pending_payload)
         logger.info(f"Mensagem de {from_name} ({chat_id}) adicionada à fila pendente. Tipo: {processed_type_internal}.")
 
@@ -666,7 +667,8 @@ class WhatsAppGeminiBot:
                 config=GenerateContentConfig(
                     tools=[google_search_tool],
                     response_modalities=["TEXT"],
-                    system_instruction=self.gemini_context
+                    system_instruction=self.gemini_context,
+                    temperature=0.7
                 )
             )
             
