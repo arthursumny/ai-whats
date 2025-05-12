@@ -683,7 +683,7 @@ class WhatsAppGeminiBot:
 
             response = self.model.generate_content(
                 contents=[full_prompt_with_history], # `contents` deve ser uma lista
-                tools=google_search_tool
+                tools=[google_search_tool]
             ) 
             
             
