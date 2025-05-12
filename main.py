@@ -1,7 +1,7 @@
 import os
 import requests
 import google.generativeai as genai
-from google.genai.types import Tool, GenerationConfig, GoogleSearch # GenerateContentConfig já existe
+from google.genai.types import Tool, GenerationConfig, GoogleSearch, GenerateContentConfig
 import time
 import re
 import logging
@@ -158,8 +158,6 @@ class WhatsAppGeminiBot:
         """Configura as conexões com as APIs"""
         try:
             genai.configure(api_key=self.gemini_api_key)
-            # Configura ferramenta de busca na web
-            self.search_tool = Tool(google_search=GoogleSearch())
 
             self.model = genai.GenerativeModel(
                 model_name=self.gemini_model_name,
@@ -679,14 +677,13 @@ class WhatsAppGeminiBot:
             
             logger.info(f"Prompt final para Gemini (chat {chat_id}): {full_prompt_with_history[:500]}...")
 
-            # Configuração de geração, se precisar de mais controle (temperatura, etc.)
-            config = GenerationConfig(
-                tools=[self.search_tool],
-            )
+            google_seach_tool = Tool(google_search=GoogleSearch())
 
             response = self.model.generate_content(
                 contents=[full_prompt_with_history], # `contents` deve ser uma lista
-                generation_config=config,   # Ativa a ferramenta de pesquisa
+                config=GenerateContentConfig(
+                    tools=[google_seach_tool],)
+                    response_modalities=["TEXT"]
             ) 
             
             
