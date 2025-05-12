@@ -465,7 +465,6 @@ class WhatsAppGeminiBot:
                             model=self.gemini_model_name,
                             contents=[prompt_for_media, image],
                             config=self.model_config,
-                            request_options={'timeout': 180}
                         )
                         media_description = media_desc_response.text.strip()
                         
