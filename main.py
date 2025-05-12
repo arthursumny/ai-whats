@@ -1,7 +1,8 @@
 import os
 import requests
 from google import genai
-from google.genai.types import Tool, GenerationConfig, GoogleSearch, GenerateContentConfig
+from google.genai import types
+from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
 import time
 import re
 import logging
@@ -157,16 +158,12 @@ class WhatsAppGeminiBot:
     def setup_apis(self):
         """Configura as conexões com as APIs"""
         try:
-            genai.configure(api_key=self.gemini_api_key)
+            self.client = genai.Client(api_key=self.gemini_api_key)
             
-            google_search_tool = Tool(google_search=GoogleSearch())
-
-            self.model = genai.GenerativeModel(
-                model_name=self.gemini_model_name,
-                system_instruction=self.gemini_context,
-                # Tools podem ser passadas aqui ou em cada chamada generate_content.
-                # Passar em cada chamada é mais flexível se nem todas precisarem.
+            self.model_config = types.GenerateContentConfig(
+            system_instruction=self.gemini_context
             )
+
             logger.info(f"Configuração do Gemini com modelo {self.gemini_model_name} concluída.")
             self.test_whapi_connection()
         except Exception as e:
@@ -483,9 +480,11 @@ class WhatsAppGeminiBot:
                             prompt_for_media = "Transcreva este áudio. Se não for possível transcrever, descreva o conteúdo do áudio de forma concisa."
                         
                         # Gerar descrição/transcrição
-                        media_desc_response = self.model.generate_content(
-                            [prompt_for_media, file_part_uploaded], # Lista de [texto, arquivo]
-                            request_options={'timeout': 180} # Timeout maior para processamento de mídia
+                        media_desc_response = self.client.models.generate_content(
+                            model=self.gemini_model_name,
+                            contents=[prompt_for_media, file_part_uploaded],
+                            config=self.model_config,
+                            request_options={'timeout': 180}
                         )
                         media_description = media_desc_response.text.strip()
                         
@@ -641,10 +640,10 @@ class WhatsAppGeminiBot:
             logger.info(f"Gerando mensagem de reengajamento para {chat_id} com prompt: {full_reengagement_prompt[:300]}...")
 
             # Gerar a mensagem de reengajamento usando Gemini (sem tools aqui, só geração de texto)
-            reengagement_response = self.model.generate_content(
-                full_reengagement_prompt,
-                # Safety settings podem ser ajustados se necessário para este tipo de prompt
-                # generation_config=genai.types.GenerationConfig(temperature=0.7)
+            reengagement_response = self.client.models.generate_content(
+                model=self.gemini_model_name,
+                contents=full_reengagement_prompt,
+                config=self.model_config
             )
             reengagement_message_text = reengagement_response.text.strip()
 
@@ -681,10 +680,12 @@ class WhatsAppGeminiBot:
 
             google_search_tool = Tool(google_search=GoogleSearch())
 
-            response = self.model.generate_content(
-                contents=[full_prompt_with_history], # `contents` deve ser uma lista
-                tools=[google_search_tool]
-            ) 
+            response = self.client.models.generate_content(
+                model=self.gemini_model_name,
+                contents=[full_prompt_with_history],
+                tools=[google_search_tool],
+                config=self.model_config
+            )
             
             
             # Para extrair o texto da resposta quando tools são usadas:
@@ -805,7 +806,11 @@ class WhatsAppGeminiBot:
             )
             
             # Gerar resumo com Gemini (sem tools aqui)
-            response = self.model.generate_content(summary_prompt)
+            response = self.client.models.generate_content(
+            model=self.gemini_model_name,
+            contents=summary_prompt,
+            config=self.model_config
+        )
             summary = response.text.strip()
 
             if not summary:
