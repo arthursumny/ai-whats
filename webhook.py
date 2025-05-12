@@ -94,7 +94,7 @@ def handle_webhook():
             # mas também 'event', 'notification', 'call_log', etc.
             # Focaremos nos tipos que carregam conteúdo do usuário.
             msg_type = message_payload.get('type', 'unknown')
-            supported_user_content_types = ['text', 'image', 'audio', 'ptt', 'video', 'document'] 
+            supported_user_content_types = ['text', 'image', 'audio', 'ptt', 'video', 'document', 'voice'] 
             # 'video' e 'document' serão tratados como texto (caption) por enquanto pela lógica atual do bot.
             
             if msg_type not in supported_user_content_types:
@@ -103,7 +103,7 @@ def handle_webhook():
                 text_check = (message_payload.get('text', {}).get('body') or 
                               message_payload.get('body') or 
                               message_payload.get('caption'))
-                if not text_check and msg_type not in ['image', 'audio', 'ptt']: # Se não for mídia e não tiver texto
+                if not text_check and msg_type not in ['image', 'audio', 'ptt', 'voice']: # Se não for mídia e não tiver texto
                     app.logger.info(f"Webhook: Mensagem tipo '{msg_type}' sem conteúdo de texto claro, ignorando. ID: {message_payload.get('id')}")
                     continue
 
