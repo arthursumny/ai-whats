@@ -306,7 +306,8 @@ class WhatsAppGeminiBot:
             'original_caption': caption,
             'mimetype': mimetype,
             'timestamp': datetime.now(timezone.utc).isoformat(),
-            'message_id': message_id
+            'message_id': message_id,
+            'link': media_url
         }
 
         self._save_pending_message(chat_id, pending_payload)
@@ -451,14 +452,9 @@ class WhatsAppGeminiBot:
                         media_response.raise_for_status()
                         media_response.raw.decode_content = True
 
-                        display_name = f"media_{chat_id}_{msg_data['message_id']}"
-                        # Upload para Gemini
-                        file_part_uploaded = genai.upload_file(
-                            path=media_response.raw, 
-                            display_name=display_name,
-                            mime_type=mimetype
-                        )
-                        logger.info(f"Mídia {file_part_uploaded.name} ({file_part_uploaded.uri}) enviada para Gemini.")
+                        image_bytes = requests.get(media_url).content
+                        image = types.Part.from_bytes(data=image_bytes, mime_type=mimetype)
+
                     
                         prompt_for_media = "Descreva este arquivo de forma concisa e objetiva."
                         if msg_type == 'audio':
@@ -467,7 +463,7 @@ class WhatsAppGeminiBot:
                         # Gerar descrição/transcrição
                         media_desc_response = self.client.models.generate_content(
                             model=self.gemini_model_name,
-                            contents=[prompt_for_media, file_part_uploaded],
+                            contents=[prompt_for_media, image],
                             config=self.model_config,
                             request_options={'timeout': 180}
                         )
