@@ -1,7 +1,7 @@
 import os
 import requests
 import google.generativeai as genai
-from google.genai.types import Tool, GenerateContentConfig, GoogleSearch # GenerateContentConfig já existe
+from google.genai.types import Tool, GenerationConfig, GoogleSearch # GenerateContentConfig já existe
 import time
 import re
 import logging
