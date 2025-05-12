@@ -2,24 +2,41 @@ from datetime import datetime
 import os
 from flask import Flask, request, jsonify
 import logging
-# Importar a classe, não a instância, para criar uma nova se necessário ou usar uma global
-from main import WhatsAppGeminiBot # , bot as global_bot_instance (se quiser usar a instância global)
+from threading import Thread # Importar Thread
+import time # Para checagem da thread
+from main import WhatsAppGeminiBot, bot # , bot as global_bot_instance (se quiser usar a instância global)
 
 app = Flask(__name__)
 
-# Configuração de logging para o Flask app (pode ser diferente do bot)
-if __name__ != '__main__': # Quando rodando com Gunicorn, por exemplo
+if __name__ != '__main__':
     gunicorn_logger = logging.getLogger('gunicorn.error')
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)
+else: # Configuração básica para execução local direta de webhook.py
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Usar a instância do bot criada em main.py
-# Isso assume que main.py é importado e sua instância 'bot' é acessível.
-# Se webhook.py e main.py rodam em processos separados (comum em produção com Gunicorn + worker separado),
-# esta abordagem de compartilhar instância não funciona. O webhook apenas enfileiraria tarefas (ex: via Pub/Sub ou Redis)
-# e o worker (main.py) as processaria.
-# Para a estrutura atual (bot em thread no mesmo processo), isso funciona.
-from main import bot # Importa a instância 'bot' de main.py
+
+# ----- INÍCIO: LÓGICA PARA INICIAR A THREAD DO BOT -----
+bot_worker_thread = None
+
+def start_bot_worker_if_not_running():
+    global bot_worker_thread
+    # Verifica se a thread já foi criada e está viva
+    if bot_worker_thread is None or not bot_worker_thread.is_alive():
+        app.logger.info("Iniciando BotWorkerThread a partir do webhook.py...")
+        bot_worker_thread = Thread(target=bot.run, name="BotWorkerThread", daemon=True)
+        bot_worker_thread.start()
+        if bot_worker_thread.is_alive():
+            app.logger.info("BotWorkerThread iniciada com sucesso.")
+        else:
+            app.logger.error("Falha ao iniciar BotWorkerThread.")
+    else:
+        app.logger.info("BotWorkerThread já está em execução.")
+
+# Chama a função para iniciar a thread do bot quando este módulo é carregado.
+# Isso é executado uma vez quando o Gunicorn (ou similar) carrega o app.
+start_bot_worker_if_not_running()
+# ----- FIM: LÓGICA PARA INICIAR A THREAD DO BOT -----
 
 # Configura um logger específico para health checks
 health_logger = logging.getLogger('health')
@@ -27,16 +44,16 @@ health_logger.setLevel(logging.WARNING)
 
 @app.route('/healthz')
 def health_check():
-    """Endpoint simplificado para Cloud Run"""
+    global bot_worker_thread
     try:
-        # Verificação básica do Firestore (usando a instância do bot)
         list(bot.db.collection("processed_messages").limit(1).stream())
-        # Testar conexão com Gemini (chamada leve)
-        # bot.model.generate_content("health check") # Pode ser custoso/lento para health check
+        # Verificar se a thread do bot está viva
+        if bot_worker_thread is None or not bot_worker_thread.is_alive():
+            health_logger.error("Health check falhou: BotWorkerThread não está ativa.")
+            return jsonify({'status': 'unhealthy', 'reason': 'Bot worker thread not running'}), 500
         return jsonify({'status': 'healthy'}), 200
     except Exception as e:
         health_logger.error(f"Falha no health check: {str(e)}", exc_info=True)
-        # app.logger.error(f"Falha no health check: {str(e)}", exc_info=True) # Logar no logger do app também
         return jsonify({'status': 'unhealthy', 'reason': str(e)}), 500
 
 @app.route('/webhook', methods=['POST'])
@@ -106,33 +123,7 @@ def handle_webhook():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 if __name__ == '__main__':
-    # Se este arquivo for executado diretamente, ele iniciará o servidor Flask.
-    # A instância 'bot' de main.py (e sua thread) deve ter sido iniciada se main.py foi importado
-    # e o bloco if __name__ == "__main__" em main.py executado (o que não acontece se main.py for só importado).
-    #
-    # Para desenvolvimento, você pode querer rodar o bot e o webhook no mesmo processo:
-    # 1. Certifique-se que o `if __name__ == "__main__":` em `main.py` que inicia a thread do bot *não*
-    #    execute quando `main.py` é importado por `webhook.py`.
-    # 2. Inicie a thread do bot aqui antes de `app.run()`:
-    #
-    # from threading import Thread
-    # if not bot_thread.is_alive(): # Referenciando bot_thread de main.py, precisa de ajuste
-    #    logger.info("Iniciando BotWorkerThread a partir do webhook.py...")
-    #    bot_worker_thread = Thread(target=bot.run, name="BotWorkerThreadFromWebhook", daemon=True)
-    #    bot_worker_thread.start()
-    #
-    # Contudo, a forma como `main.py` está estruturado (com `bot_thread.start()` no `if __name__`),
-    # ao importar `main` em `webhook`, a thread do bot *não* iniciará automaticamente.
-    #
-    # Solução mais limpa para desenvolvimento local (mesmo processo):
-    # Em main.py, mova a inicialização da thread para uma função, ex: `start_bot_worker()`
-    # E chame `start_bot_worker()` aqui antes de `app.run()`.
-    #
-    # Exemplo:
-    # if not any(t.name == "BotWorkerThread" for t in threading.enumerate()):
-    #     logger.info("Iniciando BotWorkerThread a partir do webhook.py (local dev)...")
-    #     bot_thread = Thread(target=bot.run, name="BotWorkerThread", daemon=True)
-    #     bot_thread.start()
-
-    app.logger.info("Webhook Flask app iniciando...")
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=True) # Debug=True para desenvolvimento
+    # Este bloco é para rodar o Flask localmente com 'python webhook.py'
+    # A lógica de start_bot_worker_if_not_running() já terá sido chamada na carga do módulo.
+    app.logger.info("Webhook Flask app iniciando para desenvolvimento local...")
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=True)
