@@ -1,6 +1,6 @@
 import os
 import requests
-import google.generativeai as genai
+from google import genai
 from google.genai.types import Tool, GenerationConfig, GoogleSearch, GenerateContentConfig
 import time
 import re
