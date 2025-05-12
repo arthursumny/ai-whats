@@ -128,7 +128,7 @@ class WhatsAppGeminiBot:
                 .order_by("timestamp", direction=firestore.Query.ASCENDING) # ASCENDING para ordem cronológica
                 .limit_to_last(limit) # limit_to_last para pegar as mais recentes
             )
-            docs = query.stream() # Use stream() para iterar
+            docs = query.get() # Use stream() para iterar
 
             history = []
             for doc in docs:
@@ -685,11 +685,8 @@ class WhatsAppGeminiBot:
             response = self.model.generate_content(
                 contents=[full_prompt_with_history], # `contents` deve ser uma lista
                 tools=[self.search_tool],   # Ativa a ferramenta de pesquisa
-                config=GenerateContentConfig(
-                    tools=[self.search_tool],
-                    response_modalities=["TEXT"],
-                ) 
-            )
+            ) 
+            
             
             # Para extrair o texto da resposta quando tools são usadas:
             # A API pode retornar partes diferentes. Precisamos do texto gerado.
