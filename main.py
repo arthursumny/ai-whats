@@ -466,7 +466,7 @@ class WhatsAppGeminiBot:
                         if msg_type == 'audio':
                             prompt_for_media = "Transcreva este áudio. Se não for possível transcrever, descreva o conteúdo do áudio de forma concisa."
                         elif msg_type == 'voice':
-                            prompt_for_media = "Transcreva esta voz e descreva o conteúdo do voz de forma concisa. Ela faz parte da sua conversa e use também para dar um contexto."
+                            prompt_for_media = "Transcreva este audio, exatamente como está."
                         
                         # Gerar descrição/transcrição
                         media_desc_response = self.client.models.generate_content(
@@ -476,9 +476,8 @@ class WhatsAppGeminiBot:
                         )
                         media_description = media_desc_response.text.strip()
                         
-                        entry = f"Usuário enviou um(a) {msg_type}"
-                        entry += f": [Conteúdo processado da mídia: {media_description}]"
-                        logger.info(f": [Conteúdo processado da mídia: {media_description}]")
+                        entry = media_description
+                        logger.info(f": [Conteúdo da mídia: {media_description}]")
                         processed_texts_for_gemini.append(entry)
 
                     except requests.exceptions.RequestException as e_req:
