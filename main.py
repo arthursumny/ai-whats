@@ -161,7 +161,7 @@ class WhatsAppGeminiBot:
             
             self.model_config = types.GenerateContentConfig(
                 system_instruction=self.gemini_context,
-                temperature=0.7
+                temperature=0.55
             )
 
             logger.info(f"Configuração do Gemini com modelo {self.gemini_model_name} concluída.")
@@ -673,7 +673,7 @@ class WhatsAppGeminiBot:
                     tools=[google_search_tool],
                     response_modalities=["TEXT"],
                     system_instruction=self.gemini_context,
-                    temperature=0.7
+                    temperature=0.55
                 )
             )
             
