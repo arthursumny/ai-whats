@@ -474,9 +474,12 @@ class WhatsAppGeminiBot:
                         )
                         media_description = media_desc_response.text.strip()
                         
-                        if msg_type == 'audio' or msg_type == 'image':
+                        if msg_type == 'audio':
                             entry = f"Usuário enviou um(a) {msg_type}"
                             entry += f": [Conteúdo processado da mídia: {media_description}], mantenha esse conteudo na resposta e envie entre *asteriscos*, abaixo disso um resumo também."
+                        elif msg_type == 'image':
+                            entry = f"Usuário enviou um(a) {msg_type}"
+                            entry += f": [Conteúdo processado da mídia: {media_description}]."
                         elif msg_type == 'voice':
                             entry = media_description
                         processed_texts_for_gemini.append(entry)
