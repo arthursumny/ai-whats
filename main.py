@@ -463,9 +463,7 @@ class WhatsAppGeminiBot:
 
                     
                         prompt_for_media = "Descreva este arquivo de forma concisa e objetiva."
-                        if msg_type == 'audio':
-                            prompt_for_media = "Transcreva este áudio E descreva o conteúdo do áudio de forma concisa."
-                        elif msg_type == 'voice':
+                        if msg_type == 'audio' or msg_type == 'voice':
                             prompt_for_media = "Transcreva este audio, exatamente como está."
                         
                         # Gerar descrição/transcrição
@@ -480,7 +478,7 @@ class WhatsAppGeminiBot:
                             entry = f"Usuário enviou um(a) {msg_type}"
                             if original_caption:
                                 entry += f" com a legenda '{original_caption}'"
-                            entry += f": [Conteúdo processado da mídia: {media_description}]"
+                            entry += f": [Conteúdo processado da mídia: {media_description}], mantenha esse conteudo no texto e envie entre *asteriscos*"
                         elif msg_type == 'voice':
                             entry = media_description
                         logger.info(f": [Conteúdo da mídia: {media_description}]")
