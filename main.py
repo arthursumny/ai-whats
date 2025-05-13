@@ -479,9 +479,10 @@ class WhatsAppGeminiBot:
                             if original_caption:
                                 entry += f" com a legenda '{original_caption}'"
                             entry += f": [Conteúdo processado da mídia: {media_description}], mantenha esse conteudo no texto e envie entre *asteriscos*"
+                            logger.info(f"Usuario enviou um(a) {msg_type}, com legenda '{original_caption}': [Conteúdo da mídia: {media_description}]")
                         elif msg_type == 'voice':
                             entry = media_description
-                        logger.info(f": [Conteúdo da mídia: {media_description}]")
+                            logger.info(f": [Conteúdo da mídia: {media_description}]")
                         processed_texts_for_gemini.append(entry)
 
                     except requests.exceptions.RequestException as e_req:
