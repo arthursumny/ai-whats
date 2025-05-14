@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 class WhatsAppGeminiBot:
     PENDING_CHECK_INTERVAL = 5
-    REENGAGEMENT_TIMEOUT = 43200  # 12 horas em segundos
+    REENGAGEMENT_TIMEOUT = (60 * 60 * 24 * 3)  # 3 dias em segundos
     # REENGAGEMENT_MESSAGES não será mais usado para a lógica principal,
     # mas pode ser um fallback se a geração do Gemini falhar.
     FALLBACK_REENGAGEMENT_MESSAGES = [
@@ -41,7 +41,7 @@ class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai") # Seu projeto
-        self.pending_timeout = 25  # Timeout para mensagens pendentes (em segundos)
+        self.pending_timeout = 20  # Timeout para mensagens pendentes (em segundos)
         
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
