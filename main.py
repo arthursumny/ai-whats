@@ -11,9 +11,6 @@ from dotenv import load_dotenv
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from datetime import datetime, timedelta, timezone
-# import tempfile # Não mais necessário com upload via stream
-# import shutil   # Não mais necessário
-# import mimetypes # Para fallback de mimetype, mas idealmente Whapi fornece
 
 # Carrega variáveis do .env
 load_dotenv()
@@ -174,7 +171,7 @@ class WhatsAppGeminiBot:
         """Atualiza o contexto (histórico) diretamente no Firestore"""
         try:
             self._save_conversation_history(chat_id, user_message, False) # Mensagem do usuário
-            self._save_conversation_history(chat_id, bot_response, True)  # Resposta do bot
+            #self._save_conversation_history(chat_id, bot_response, True)  # Resposta do bot
             
             context_ref = self.db.collection("conversation_contexts").document(chat_id)
             context_ref.set({
