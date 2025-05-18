@@ -303,6 +303,7 @@ class WhatsAppGeminiBot:
         """Atualiza o contexto (histórico) diretamente no Firestore"""
         try:
             self._save_conversation_history(chat_id, user_message, False) # Mensagem do usuário
+            self._save_conversation_history(chat_id, bot_response, True)  # Resposta do bot
             
             context_ref = self.db.collection("conversation_contexts").document(chat_id)
             context_ref.set({
