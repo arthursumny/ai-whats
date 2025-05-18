@@ -11,9 +11,6 @@ from dotenv import load_dotenv
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from datetime import datetime, timedelta, timezone
-# import tempfile # Não mais necessário com upload via stream
-# import shutil   # Não mais necessário
-# import mimetypes # Para fallback de mimetype, mas idealmente Whapi fornece
 
 # Carrega variáveis do .env
 load_dotenv()
@@ -146,6 +143,138 @@ class WhatsAppGeminiBot:
             logger.error(f"Erro ao buscar histórico: {e}")
             return []
 
+    def delete_bot_messages_from_history(self, chat_id: str) -> bool:
+        """
+        Deleta todas as mensagens do histórico de conversas para um chat_id específico
+        onde is_bot é True.
+
+        Args:
+            chat_id (str): O ID do chat do qual as mensagens do bot serão excluídas.
+
+        Returns:
+            bool: True se a exclusão for bem-sucedida (ou se não houver mensagens para excluir),
+                  False se ocorrer um erro.
+        """
+        if not chat_id:
+            logger.error("chat_id não fornecido para delete_bot_messages_from_history.")
+            return False
+
+        try:
+            logger.info(f"Iniciando exclusão de mensagens do bot do histórico para o chat_id: {chat_id}")
+            
+            history_ref = self.db.collection("conversation_history")
+            # Query base para encontrar as mensagens do bot para o chat específico
+            base_query = history_ref.where(filter=FieldFilter("chat_id", "==", chat_id)) \
+                                    .where(filter=FieldFilter("is_bot", "==", True))
+
+            total_deleted_count = 0
+            
+            # Processar em lotes para lidar com um grande número de documentos
+            # e respeitar os limites de transação/batch do Firestore.
+            # O limite de documentos por batch de escrita/deleção é 500.
+            # O limite de documentos lidos por query.stream() não é fixo, mas é bom limitar
+            # a quantidade processada de uma vez para gerenciar memória e tempo de execução.
+            while True:
+                # Pega um lote de documentos para deletar (até 500 por vez)
+                docs_to_delete_snapshot = list(base_query.limit(500).stream())
+                
+                if not docs_to_delete_snapshot:
+                    # Não há mais documentos que correspondam à query
+                    break
+
+                batch = self.db.batch()
+                num_in_this_batch = 0
+                for doc_snapshot in docs_to_delete_snapshot:
+                    logger.debug(f"Agendando para exclusão: Documento {doc_snapshot.id} (is_bot=True) do chat {chat_id}")
+                    batch.delete(doc_snapshot.reference)
+                    num_in_this_batch += 1
+                
+                if num_in_this_batch > 0:
+                    batch.commit() # Executa as deleções em lote
+                    total_deleted_count += num_in_this_batch
+                    logger.info(f"Lote de {num_in_this_batch} mensagens do bot excluídas para o chat {chat_id}.")
+                
+                # Se o número de documentos deletados neste lote for menor que o limite,
+                # significa que processamos todos os documentos restantes.
+                if num_in_this_batch < 500:
+                    break
+            
+            if total_deleted_count > 0:
+                logger.info(f"Total de {total_deleted_count} mensagens do bot excluídas com sucesso do histórico para o chat_id: {chat_id}")
+            else:
+                logger.info(f"Nenhuma mensagem do bot encontrada no histórico para exclusão para o chat_id: {chat_id}")
+            
+            return True
+
+        except Exception as e:
+            logger.error(f"Erro ao excluir mensagens do bot do histórico para o chat {chat_id}: {e}", exc_info=True)
+            return False
+
+    def _get_all_distinct_chat_ids_from_history(self) -> List[str]:
+        """
+        Busca todos os chat_ids distintos da coleção conversation_history.
+        Usa .select(["chat_id"]) para otimizar a leitura, buscando apenas este campo.
+        """
+        chat_ids_set = set()
+        try:
+            logger.info("Buscando todos os chat_ids distintos do histórico de conversas...")
+            history_ref = self.db.collection("conversation_history")
+            # Selecionar apenas o campo chat_id para otimizar a leitura de dados
+            # O método stream() é eficiente para iterar sobre grandes conjuntos de resultados.
+            for doc_snapshot in history_ref.select(["chat_id"]).stream():
+                chat_id = doc_snapshot.get("chat_id")
+                if chat_id:
+                    chat_ids_set.add(chat_id)
+            
+            distinct_chat_ids = list(chat_ids_set)
+            logger.info(f"Encontrados {len(distinct_chat_ids)} chat_ids distintos no histórico.")
+            return distinct_chat_ids
+        except Exception as e:
+            logger.error(f"Erro ao buscar chat_ids distintos do histórico: {e}", exc_info=True)
+            return []
+
+    def delete_all_bot_messages_globally(self):
+        """
+        Deleta todas as mensagens de bot (is_bot=True) de todos os chats
+        registrados na coleção conversation_history.
+
+        AVISO: Esta pode ser uma operação longa e custosa em termos de leituras/escritas
+        no Firestore, especialmente com um grande volume de dados. Considere o impacto
+        antes de usar frequentemente.
+        """
+        logger.warning("Iniciando exclusão GLOBAL de mensagens de bot do histórico. Esta operação pode ser intensiva.")
+        
+        distinct_chat_ids = self._get_all_distinct_chat_ids_from_history()
+        
+        if not distinct_chat_ids:
+            logger.info("Nenhum chat_id encontrado no histórico para processar a exclusão global de mensagens de bot.")
+            return
+
+        total_chats_processed = 0
+        total_chats_failed = 0
+        overall_success = True
+
+        for chat_id in distinct_chat_ids:
+            logger.info(f"Iniciando exclusão de mensagens do bot para o chat_id: {chat_id} (parte da limpeza global).")
+            success = self.delete_bot_messages_from_history(chat_id) # Reutiliza a função existente
+            if success:
+                total_chats_processed += 1
+            else:
+                total_chats_failed += 1
+                overall_success = False
+                logger.error(f"Falha ao excluir mensagens do bot para o chat_id: {chat_id} durante a limpeza global.")
+                
+        logger.info(f"Exclusão global de mensagens de bot concluída.")
+        logger.info(f"Total de chats onde a limpeza foi tentada: {len(distinct_chat_ids)}")
+        logger.info(f"Chats processados com sucesso (mensagens do bot excluídas ou não encontradas): {total_chats_processed}")
+        logger.info(f"Chats onde a limpeza falhou: {total_chats_failed}")
+        
+        if not overall_success:
+            logger.error("Pelo menos uma falha ocorreu durante a exclusão global de mensagens de bot.")
+        else:
+            logger.info("Todas as operações de exclusão de mensagens de bot (globais) foram bem-sucedidas ou não necessitaram ação.")
+
+
     def reload_env(self):
         """Recarrega variáveis do .env"""
         load_dotenv(override=True)
@@ -174,7 +303,6 @@ class WhatsAppGeminiBot:
         """Atualiza o contexto (histórico) diretamente no Firestore"""
         try:
             self._save_conversation_history(chat_id, user_message, False) # Mensagem do usuário
-            self._save_conversation_history(chat_id, bot_response, True)  # Resposta do bot
             
             context_ref = self.db.collection("conversation_contexts").document(chat_id)
             context_ref.set({

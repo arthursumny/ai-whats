@@ -116,7 +116,15 @@ def handle_webhook():
                 app.logger.error(f"Erro ao chamar bot.process_whatsapp_message para msg ID {message_payload.get('id')}: {e_process}", exc_info=True)
                 # Continuar com outras mensagens se houver
 
-        return jsonify({'status': 'success', 'detail': f'{len(messages_to_process)} mensagens recebidas para processamento.'}), 200
+            try:
+                app.logger.info("Webhook processou as mensagens. Iniciando limpeza global de mensagens de bot do histórico...")
+                bot.delete_all_bot_messages_globally()
+                app.logger.info("Limpeza global de mensagens de bot do histórico concluída após o processamento do webhook.")
+            except Exception as e_global_delete:
+                # Loga o erro, mas não impede a resposta de sucesso do webhook para as mensagens processadas.
+                app.logger.error(f"Erro durante a execução da limpeza global de mensagens de bot: {e_global_delete}", exc_info=True)
+
+                return jsonify({'status': 'success', 'detail': f'{len(messages_to_process)} mensagens recebidas para processamento.'}), 200
     
     except Exception as e:
         app.logger.error(f"Erro geral no manipulador de webhook: {str(e)}", exc_info=True)
