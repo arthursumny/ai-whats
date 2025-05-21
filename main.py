@@ -603,7 +603,7 @@ class WhatsAppGeminiBot:
             history_str_reengagement = "\n".join(history_parts_reengagement)
 
             reengagement_instruction = (
-                "O usuário deste chat não interage há algum tempo (cerca de 12 horas ou mais).\n"
+                "O usuário deste chat não interage há algum tempo (cerca de 36 horas ou mais).\n"
                 "Com base no resumo e/ou no histórico recente da nossa conversa (se disponível abaixo), "
                 "gere uma mensagem curta, amigável e personalizada para reengajá-lo. \n"
                 "Você pode, por exemplo, perguntar se ele ainda precisa de ajuda com o último tópico discutido, "

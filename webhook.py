@@ -71,13 +71,12 @@ def handle_webhook():
         if 'messages' in data and isinstance(data['messages'], list):
             messages_to_process = data['messages']
         elif 'message' in data and isinstance(data['message'], dict): # Algumas APIs enviam 'message'
-             messages_to_process = [data['message']]
+            messages_to_process = [data['message']]
         elif 'id' in data and 'chat_id' in data: # Se a mensagem for o próprio corpo do JSON
             messages_to_process = [data]
         else:
             app.logger.warning(f"Webhook: formato de mensagem não esperado. Dados: {data}")
             return jsonify({'status': 'Formato de mensagem não esperado'}), 400
-
 
         app.logger.info(f"Webhook recebeu {len(messages_to_process)} mensagem(ns).")
 
@@ -107,7 +106,6 @@ def handle_webhook():
                     app.logger.info(f"Webhook: Mensagem tipo '{msg_type}' sem conteúdo de texto claro, ignorando. ID: {message_payload.get('id')}")
                     continue
 
-
             # Delega o processamento completo da mensagem (incluindo extração de tipo/conteúdo) ao bot
             # A instância 'bot' é importada de main.py
             try:
@@ -116,11 +114,14 @@ def handle_webhook():
                 app.logger.error(f"Erro ao chamar bot.process_whatsapp_message para msg ID {message_payload.get('id')}: {e_process}", exc_info=True)
                 # Continuar com outras mensagens se houver
 
-            return jsonify({'status': 'success', 'detail': f'{len(messages_to_process)} mensagens recebidas para processamento.'}), 200
+        # Moved the return statement outside the loop
+        # This ensures a response is always returned if the try block completes.
+        return jsonify({'status': 'success', 'detail': f'{len(messages_to_process)} mensagens recebidas para processamento.'}), 200
     
     except Exception as e:
         app.logger.error(f"Erro geral no manipulador de webhook: {str(e)}", exc_info=True)
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 if __name__ == '__main__':
     # Este bloco é para rodar o Flask localmente com 'python webhook.py'
