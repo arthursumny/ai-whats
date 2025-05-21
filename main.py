@@ -188,7 +188,7 @@ class WhatsAppGeminiBot:
             summary_doc = summary_ref.get()
             summary = summary_doc.get("summary") if summary_doc.exists else ""
 
-            history = self._get_conversation_history(chat_id, limit=50) # Limite menor para prompt
+            history = self._get_conversation_history(chat_id, limit=500) # Limite menor para prompt
 
             if not history and not summary:
                 return f"Usuário: {current_prompt_text}" # Adiciona prefixo Usuário
@@ -207,7 +207,7 @@ class WhatsAppGeminiBot:
             if context_str:
                 final_prompt.append(f"### Histórico recente da conversa ###\n{context_str}\n")
             
-            final_prompt.append("### Nova interação ###")
+            final_prompt.append("### Nova interação, responda essa nova interação e use o histórico acima apenas se necessário e cabível na conversa ###")
             final_prompt.append(f"Usuário: {current_prompt_text}") # current_prompt_text já pode conter descrições de mídia
             
             return "\n".join(final_prompt)
