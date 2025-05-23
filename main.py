@@ -130,11 +130,16 @@ class WhatsAppGeminiBot:
             history = []
             for doc in docs:
                 data = doc.to_dict()
+                doc_timestamp = data.get('timestamp')
+                if isinstance(doc_timestamp, datetime): # Garante que é um objeto datetime
+                    history_timestamp = doc_timestamp.timestamp()
+                else:
+                    history_timestamp = None # Ou algum tratamento de erro/log
                 if 'message_text' in data:
                     history.append({
                         'message_text': data['message_text'],
                         'is_bot': data.get('is_bot', False), # Adicionado
-                        'timestamp': data['timestamp'].timestamp() if data.get('timestamp') else None
+                        'timestamp': history_timestamp # Armazena como Unix timestamp (float)
                     })
                 else:
                     logger.warning(f"Documento ignorado (campo 'message_text' ausente): {doc.id}")
@@ -181,14 +186,16 @@ class WhatsAppGeminiBot:
         except Exception as e:
             logger.error(f"Erro ao atualizar contexto: {e}")
 
-    def build_context_prompt(self, chat_id: str, current_prompt_text: str) -> str:
+    def build_context_prompt(self, chat_id: str, current_prompt_text: str, current_message_timestamp: datetime) -> str:
         """Constrói o prompt com histórico formatado corretamente, incluindo o resumo."""
         try:
             summary_ref = self.db.collection("conversation_summaries").document(chat_id)
             summary_doc = summary_ref.get()
             summary = summary_doc.get("summary") if summary_doc.exists else ""
 
-            history = self._get_conversation_history(chat_id, limit=500) # Limite menor para prompt
+            history = self._get_conversation_history(chat_id, limit=100) # Limite menor para prompt
+
+            current_timestamp_iso = current_message_timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')
 
             if not history and not summary:
                 return f"Usuário: {current_prompt_text}" # Adiciona prefixo Usuário
@@ -197,18 +204,31 @@ class WhatsAppGeminiBot:
             context_parts = []
             for msg in history:
                 role = "Usuário" if not msg.get('is_bot', False) else "Assistente"
-                context_parts.append(f"{role}: {msg['message_text']}")
+                msg_timestamp_iso = "data desconhecida"
+                if msg.get('timestamp'): # msg['timestamp'] é um Unix timestamp (float)
+                    # Converte Unix timestamp (float, assumido UTC) para objeto datetime UTC
+                    msg_dt = datetime.fromtimestamp(msg['timestamp'], timezone.utc)
+                    msg_timestamp_iso = msg_dt.strftime('%Y-%m-%d %H:%M:%S %Z')
+                context_parts.append(f"{role} (em {msg_timestamp_iso}): {msg['message_text']}")
             context_str = "\n".join(context_parts)
             
             # Monta o prompt final
             final_prompt = []
             if summary:
                 final_prompt.append(f"### Resumo da conversa anterior ###\n{summary}\n")
-            if context_str:
-                final_prompt.append(f"### Histórico recente da conversa ###\n{context_str}\n")
+            if context_str: 
+                final_prompt.append(f"### Histórico recente da conversa (com timestamps UTC) ###\n{context_str}\n")
             
-            final_prompt.append("### Nova interação, responda essa nova interação e use o histórico acima apenas se necessário e cabível na conversa ###")
-            final_prompt.append(f"Usuário: {current_prompt_text}") # current_prompt_text já pode conter descrições de mídia
+            final_prompt.append(
+                "### Nova interação, responda a esta nova interação. ###\n"
+                f"A mensagem atual do usuário foi recebida em {current_timestamp_iso} (UTC).\n"
+                "Considere os timestamps das mensagens do histórico e da mensagem atual. "
+                "Se uma mensagem do histórico for significativamente antiga em relação à mensagem atual, "
+                "avalie cuidadosamente se o tópico ainda é relevante e se faz sentido continuar ou referenciar essa conversa antiga. "
+                "Priorize a relevância para a interação atual. "
+                "Use o histórico e o resumo acima como contexto apenas se forem pertinentes para a nova interação."
+            )
+            final_prompt.append(f"Usuário (em {current_timestamp_iso}): {current_prompt_text}")
             
             return "\n".join(final_prompt)
 
@@ -405,6 +425,22 @@ class WhatsAppGeminiBot:
             except (TypeError, ValueError) as e_sort:
                 logger.error(f"Erro ao ordenar mensagens pendentes para {chat_id} por timestamp: {e_sort}. Usando ordem atual.")
 
+            # Obter o timestamp da última mensagem do lote para a "nova interação"
+            # Este será o timestamp de referência para a "mensagem atual" no prompt do Gemini.
+            current_interaction_timestamp = datetime.now(timezone.utc) # Fallback
+            if pending_msg_list: # Garante que a lista não está vazia
+                try:
+                    # O timestamp é armazenado como string ISO 8601 UTC
+                    last_msg_ts_str = pending_msg_list[-1]['timestamp']
+                    current_interaction_timestamp = datetime.fromisoformat(last_msg_ts_str)
+                    # Assegurar que é timezone-aware (UTC), fromisoformat pode retornar naive se Z/offset não estiver presente
+                    # No entanto, datetime.now(timezone.utc).isoformat() sempre inclui offset.
+                    if current_interaction_timestamp.tzinfo is None:
+                        current_interaction_timestamp = current_interaction_timestamp.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError, IndexError) as e_ts_parse:
+                    logger.warning(f"Não foi possível parsear o timestamp ('{last_msg_ts_str}') da última mensagem pendente para {chat_id}: {e_ts_parse}. Usando now().")
+                    current_interaction_timestamp = datetime.now(timezone.utc)
+
 
             processed_texts_for_gemini = []
             all_message_ids = [msg['message_id'] for msg in pending_msg_list]
@@ -511,7 +547,7 @@ class WhatsAppGeminiBot:
 
             
             # Gerar resposta do Gemini
-            response_text = self.generate_gemini_response(full_user_input_text, chat_id)
+            response_text = self.generate_gemini_response(full_user_input_text, chat_id, current_interaction_timestamp)
             logger.info(f"Resposta do Gemini gerada para {chat_id}: {response_text[:100]}...")
 
             # Enviar resposta ao WhatsApp
@@ -656,11 +692,11 @@ class WhatsAppGeminiBot:
         except Exception as e:
             logger.error(f"Erro ao gerar/enviar mensagem de reengajamento para {chat_id}: {e}", exc_info=True)
 
-    def generate_gemini_response(self, current_input_text: str, chat_id: str) -> str:
+    def generate_gemini_response(self, current_input_text: str, chat_id: str, current_message_timestamp: datetime) -> str:
         """Gera resposta do Gemini considerando o contexto completo e usando Google Search tool."""
         try:
             # current_input_text é o texto já processado (incluindo descrições de mídia)
-            full_prompt_with_history = self.build_context_prompt(chat_id, current_input_text)
+            full_prompt_with_history = self.build_context_prompt(chat_id, current_input_text, current_message_timestamp)
             
             logger.info(f"Prompt final para Gemini (chat {chat_id})")
 
