@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from datetime import datetime, timedelta, timezone
+from dateutil import parser as dateutil_parser # Added for reminder date parsing
+from dateutil.relativedelta import relativedelta # Added for recurrence
+
 
 # Carrega variáveis do .env
 load_dotenv()
@@ -35,15 +38,38 @@ class WhatsAppGeminiBot:
         "Oi! Está tudo bem por aí? Posso ajudar com algo?",
         "Oi! Como posso ajudar você hoje?",
     ]
+
+    # Reminder feature constants
+    REMINDER_REQUEST_KEYWORDS_REGEX = r"(me\s+lembre|lembre-me|criar\s+lembrete|novo\s+lembrete|lembrete\s+para|agendar\s+lembrete|anotar\s+lembrete|nao\s+me\s+deixe\s+esquecer|nao\s+esquecer\s+de)"
+    REMINDER_STATE_AWAITING_CONTENT = "awaiting_content"
+    REMINDER_STATE_AWAITING_DATETIME = "awaiting_datetime"
+    REMINDER_STATE_AWAITING_RECURRENCE = "awaiting_recurrence"
+    REMINDER_SESSION_TIMEOUT_SECONDS = 300  # 5 minutes for pending reminder session
+    REMINDER_CHECK_INTERVAL_SECONDS = 60 # Check for due reminders every 60 seconds
+
+    PORTUGUESE_DAYS_FOR_PARSING = {
+        "segunda": "monday", "terça": "tuesday", "quarta": "wednesday",
+        "quinta": "thursday", "sexta": "friday", "sábado": "saturday", "domingo": "sunday",
+        "segunda-feira": "monday", "terça-feira": "tuesday", "quarta-feira": "wednesday",
+        "quinta-feira": "thursday", "sexta-feira": "friday"
+    }
+    RECURRENCE_KEYWORDS = {
+        "diariamente": "daily", "todo dia": "daily", "todos os dias": "daily",
+        "semanalmente": "weekly", "toda semana": "weekly", "todas as semanas": "weekly",
+        "mensalmente": "monthly", "todo mes": "monthly", "todos os meses": "monthly", # "mes" without accent for easier regex
+        "anualmente": "yearly", "todo ano": "yearly", "todos os anos": "yearly"
+    }
+
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai") # Seu projeto
-        self.pending_timeout = 20  # Timeout para mensagens pendentes (em segundos)
+        self.pending_timeout = 15  # Timeout para mensagens pendentes (em segundos)
         
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
         
         self.setup_apis()
+        self.pending_reminder_sessions: Dict[str, Dict[str, Any]] = {}
 
     def _get_pending_messages(self, chat_id: str) -> Dict[str, Any]:
         """Obtém mensagens pendentes para um chat"""
@@ -125,16 +151,26 @@ class WhatsAppGeminiBot:
                 .order_by("timestamp", direction=firestore.Query.ASCENDING) # ASCENDING para ordem cronológica
                 .limit_to_last(limit) # limit_to_last para pegar as mais recentes
             )
-            docs = query.get() # Use stream() para iterar
+            docs = query.get() 
 
             history = []
             for doc in docs:
                 data = doc.to_dict()
                 doc_timestamp = data.get('timestamp')
-                if isinstance(doc_timestamp, datetime): # Garante que é um objeto datetime
+                # Ensure timestamp is a datetime object before calling .timestamp()
+                if isinstance(doc_timestamp, datetime):
                     history_timestamp = doc_timestamp.timestamp()
-                else:
-                    history_timestamp = None # Ou algum tratamento de erro/log
+                elif doc_timestamp is None: # Handle missing timestamp if necessary
+                    history_timestamp = None 
+                    logger.warning(f"Documento {doc.id} sem timestamp no histórico.")
+                else: # If it's already a float or int (e.g. from older data)
+                    try:
+                        history_timestamp = float(doc_timestamp)
+                    except (ValueError, TypeError):
+                        logger.warning(f"Timestamp inválido no documento {doc.id}: {doc_timestamp}")
+                        history_timestamp = None
+                        
+
                 if 'message_text' in data:
                     history.append({
                         'message_text': data['message_text'],
@@ -258,13 +294,12 @@ class WhatsAppGeminiBot:
             logger.warning("Mensagem sem ID recebida, ignorando.")
             return
 
-        if self._message_exists(message_id):
-            logger.info(f"Mensagem {message_id} já processada, ignorando.")
+        if self._message_exists(message_id) and not self.pending_reminder_sessions.get(message.get('chat_id')):
+            logger.info(f"Mensagem {message_id} já processada e não há sessão de lembrete pendente, ignorando.")
             return
 
         chat_id = message.get('chat_id')
         from_name = message.get('from_name', 'Desconhecido')
-
         msg_type_whapi = message.get('type', 'text')
         caption = message.get('caption')
         mimetype = message.get('mimetype')
@@ -275,6 +310,26 @@ class WhatsAppGeminiBot:
             text_body = message['text'].get('body', '')
         elif 'body' in message and isinstance(message['body'], str):
             text_body = message['body']
+
+        
+        # --- Reminder Flow Logic ---
+        if chat_id in self.pending_reminder_sessions:
+            self._save_message(message_id, chat_id, text_body, from_name, "text") # Log user's reply
+            self._save_conversation_history(chat_id, text_body, False)
+            self._handle_pending_reminder_interaction(chat_id, text_body, message_id)
+            return # Reminder flow handles its own response
+
+        if self._is_reminder_request(text_body):
+            self._save_message(message_id, chat_id, text_body, from_name, "text") # Log user's request
+            self._save_conversation_history(chat_id, text_body, False)
+            self._initiate_reminder_creation(chat_id, text_body, message_id)
+            return # Reminder flow handles its own response
+        # --- End Reminder Flow Logic ---
+
+        # If not a reminder flow, proceed with standard message processing (Gemini, etc.)
+        if self._message_exists(message_id): # Re-check, as reminder flow might have saved it
+             logger.info(f"Mensagem {message_id} já processada (após checagem de lembrete), ignorando para fluxo Gemini.")
+             return
 
         # Lógica para mídia (imagem, áudio, etc.)
         media_url = None
@@ -335,6 +390,400 @@ class WhatsAppGeminiBot:
         self._save_pending_message(chat_id, pending_payload)
         logger.info(f"Mensagem de {from_name} ({chat_id}) adicionada à fila pendente. Tipo: {processed_type_internal}.")
 
+    # --- Methods for Reminder Feature ---
+    def _is_reminder_request(self, text: str) -> bool:
+        """Checks if the text contains keywords indicating a reminder request."""
+        if not text:
+            return False
+        return bool(re.search(self.REMINDER_REQUEST_KEYWORDS_REGEX, text, re.IGNORECASE))
+
+    def _clean_text_for_parsing(self, text: str) -> str:
+        """Prepares text for date/time parsing by translating Portuguese day names."""
+        processed_text = text.lower()
+        for pt_day, en_day in self.PORTUGUESE_DAYS_FOR_PARSING.items():
+            processed_text = re.sub(r'\b' + pt_day + r'\b', en_day, processed_text)
+        
+        # Handle "hoje", "amanhã", "depois de amanha" by replacing with parsable dates
+        now = datetime.now(timezone.utc)
+        processed_text = re.sub(r'\bhoje\b', now.strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
+        processed_text = re.sub(r'\bamanhã\b', (now + timedelta(days=1)).strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
+        processed_text = re.sub(r'\bdepois de amanhã\b', (now + timedelta(days=2)).strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
+        
+        # "próxima segunda" -> "next monday"
+        processed_text = re.sub(r'próxima\s+', 'next ', processed_text, flags=re.IGNORECASE)
+        processed_text = re.sub(r'próximo\s+', 'next ', processed_text, flags=re.IGNORECASE)
+        return processed_text
+
+    def _extract_reminder_details_from_text(self, text: str, chat_id: str) -> Dict[str, Any]:
+        """
+        Extracts content, datetime, and recurrence from text.
+        This is a simplified version and can be improved with more robust regex.
+        """
+        details = {
+            "content": None,
+            "datetime_obj": None,
+            "recurrence": "none", # Default if not specified
+            "original_datetime_str": None # Store the part of text identified as datetime
+        }
+        
+        # Remove reminder keywords to isolate payload
+        payload_text = re.sub(self.REMINDER_REQUEST_KEYWORDS_REGEX, "", text, flags=re.IGNORECASE).strip()
+        # Also remove common prepositions that might precede the actual content after keywords
+        payload_text = re.sub(r"^(de|para|que)\s+", "", payload_text, flags=re.IGNORECASE).strip()
+
+        if not payload_text:
+            return details # Not enough info
+
+        text_to_parse_for_datetime_and_content = payload_text
+        
+        # 1. Extract Recurrence
+        # Iterate and remove recurrence phrases first, as they are more distinct
+        # Store the longest recurrence phrase found
+        found_recurrence_phrase = ""
+        for phrase, key in self.RECURRENCE_KEYWORDS.items():
+            match = re.search(r'\b' + phrase + r'\b', text_to_parse_for_datetime_and_content, re.IGNORECASE)
+            if match:
+                if len(phrase) > len(found_recurrence_phrase): # Prioritize longer matches
+                    found_recurrence_phrase = match.group(0)
+                    details["recurrence"] = key
+        
+        if found_recurrence_phrase:
+            text_to_parse_for_datetime_and_content = text_to_parse_for_datetime_and_content.replace(found_recurrence_phrase, "").strip()
+
+        # 2. Extract Datetime
+        # Use dateutil.parser.parse with fuzzy_with_tokens to separate date/time from other text
+        cleaned_for_datetime_parsing = self._clean_text_for_parsing(text_to_parse_for_datetime_and_content)
+        
+        # Try to parse, assuming the user is in the bot's system timezone (or we default to UTC interpretation)
+        # For more accuracy, one might need to know the user's timezone.
+        # `dayfirst=True` helps with DD/MM/YYYY formats common in Brazil.
+        try:
+            # fuzzy_with_tokens returns (datetime_obj, tuple_of_non_datetime_tokens)
+            parsed_datetime, non_datetime_tokens = dateutil_parser.parse(cleaned_for_datetime_parsing, fuzzy_with_tokens=True, dayfirst=True)
+            
+            # Ensure the parsed datetime is timezone-aware (UTC)
+            if parsed_datetime.tzinfo is None:
+                # This assumes the time given is local to where the bot is running, then converts to UTC.
+                # A better approach might involve asking user for timezone or using a default.
+                # For now, let's assume it's intended as UTC if no TZ info, or make it local then UTC.
+                # Let's assume the parsed time is in the system's local timezone and convert to UTC.
+                # local_tz = datetime.now(timezone.utc).astimezone().tzinfo # Get local system timezone
+                # parsed_datetime = parsed_datetime.replace(tzinfo=local_tz)
+                # details["datetime_obj"] = parsed_datetime.astimezone(timezone.utc)
+                
+                # Simpler: if naive, assume it's for "today" in UTC context or a future date.
+                # dateutil often defaults to current day if only time is given.
+                # If it's in the past (e.g. parsed "10:00" as today 10:00 but it's already 11:00), advance it.
+                now_utc = datetime.now(timezone.utc)
+                parsed_datetime_utc = parsed_datetime.replace(tzinfo=timezone.utc) # Tentatively UTC
+
+                if parsed_datetime_utc < now_utc and parsed_datetime.time() == parsed_datetime_utc.time(): # if only time was given and it's past
+                     parsed_datetime_utc += timedelta(days=1)
+                details["datetime_obj"] = parsed_datetime_utc
+
+            else: # Already timezone-aware
+                details["datetime_obj"] = parsed_datetime.astimezone(timezone.utc)
+
+            # Reconstruct what was likely the datetime string from the original text
+            # This is tricky. The non_datetime_tokens are parts *not* used.
+            # So, the original text minus these tokens is roughly the datetime string.
+            temp_content_parts = [token.strip() for token in non_datetime_tokens if token.strip()]
+            details["content"] = " ".join(temp_content_parts).strip()
+            
+            # Try to find the original datetime string (this is an approximation)
+            # We need to find what part of `text_to_parse_for_datetime_and_content` became `details["datetime_obj"]`
+            # This is complex. For now, we'll just use the successfully parsed object.
+            # details["original_datetime_str"] = "extracted datetime part" # Placeholder
+
+        except (ValueError, TypeError) as e:
+            logger.info(f"Could not parse datetime from '{cleaned_for_datetime_parsing}': {e}")
+            details["content"] = text_to_parse_for_datetime_and_content # If no date, all remaining is content
+        
+        # If content is empty after extraction, it means the whole payload was date/recurrence
+        if not details["content"] and payload_text and (details["datetime_obj"] or details["recurrence"] != "none"):
+             details["content"] = None # Explicitly mark as not found if only date/recurrence was in payload
+
+        # Final cleanup of content: remove reminder keywords again if they somehow survived
+        if details["content"]:
+            details["content"] = re.sub(self.REMINDER_REQUEST_KEYWORDS_REGEX, "", details["content"], flags=re.IGNORECASE).strip()
+            details["content"] = re.sub(r"^(de|para|que)\s+", "", details["content"], flags=re.IGNORECASE).strip()
+            if not details["content"]: details["content"] = None
+
+        return details
+
+    def _initiate_reminder_creation(self, chat_id: str, text: str, message_id: str):
+        """Starts the process of creating a new reminder."""
+        logger.info(f"Initiating reminder creation for chat {chat_id} from text: {text}")
+        
+        # Clean up any previous stale session for this chat_id
+        if chat_id in self.pending_reminder_sessions:
+            del self.pending_reminder_sessions[chat_id]
+
+        extracted_details = self._extract_reminder_details_from_text(text, chat_id)
+        
+        content = extracted_details.get("content")
+        datetime_obj = extracted_details.get("datetime_obj")
+        recurrence = extracted_details.get("recurrence", "none")
+
+        session_data = {
+            "state": "",
+            "content": content,
+            "datetime_obj": datetime_obj,
+            "recurrence": recurrence,
+            "original_message_id": message_id,
+            "last_interaction": datetime.now(timezone.utc)
+        }
+
+        if not content:
+            session_data["state"] = self.REMINDER_STATE_AWAITING_CONTENT
+        elif not datetime_obj:
+            session_data["state"] = self.REMINDER_STATE_AWAITING_DATETIME
+        # Recurrence has a default ("none"), so we only ask if we want to confirm or change.
+        # For simplicity, we'll assume "none" if not specified and not ask unless we enhance this later.
+        # else if recurrence == "none": # Could ask "Deseja que este lembrete se repita?"
+        # session_data["state"] = self.REMINDER_STATE_AWAITING_RECURRENCE 
+
+        if session_data["state"]:
+            self.pending_reminder_sessions[chat_id] = session_data
+            self._ask_for_missing_reminder_info(chat_id, session_data)
+        else:
+            # All details found
+            self._save_reminder_to_db(chat_id, content, datetime_obj, recurrence, message_id)
+            response_text = f"Lembrete agendado para {datetime_obj.strftime('%d/%m/%Y às %H:%M')} (UTC): {content}"
+            if recurrence != "none":
+                response_text += f" (Recorrência: {recurrence})"
+            self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
+            self._save_conversation_history(chat_id, response_text, True)
+
+
+    def _handle_pending_reminder_interaction(self, chat_id: str, text: str, message_id: str):
+        """Handles user's response when the bot is waiting for more reminder info."""
+        if chat_id not in self.pending_reminder_sessions:
+            # Should not happen if called correctly
+            logger.warning(f"No pending reminder session for {chat_id} in _handle_pending_reminder_interaction")
+            # Fallback to standard processing if something went wrong
+            # self.process_whatsapp_message(message) # This would cause a loop.
+            # Instead, just log and maybe send a generic error or ignore.
+            return
+
+        session = self.pending_reminder_sessions[chat_id]
+        session["last_interaction"] = datetime.now(timezone.utc) # Update interaction time
+
+        if text.lower().strip() in ["cancelar", "cancela"]:
+            del self.pending_reminder_sessions[chat_id]
+            response_text = "Criação de lembrete cancelada."
+            self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
+            self._save_conversation_history(chat_id, response_text, True)
+            return
+
+        current_state = session["state"]
+        
+        if current_state == self.REMINDER_STATE_AWAITING_CONTENT:
+            if text.strip():
+                session["content"] = text.strip()
+                session["state"] = "" # Mark as filled
+            else: # Empty content
+                self.send_whatsapp_message(chat_id, "O conteúdo do lembrete não pode ser vazio. Por favor, me diga o que devo lembrar.", reply_to=message_id)
+                self._save_conversation_history(chat_id, "O conteúdo do lembrete não pode ser vazio. Por favor, me diga o que devo lembrar.", True)
+                return
+
+
+        elif current_state == self.REMINDER_STATE_AWAITING_DATETIME:
+            try:
+                cleaned_text = self._clean_text_for_parsing(text)
+                # We expect the user to provide only the date/time here
+                parsed_dt, _ = dateutil_parser.parse(cleaned_text, fuzzy_with_tokens=False, dayfirst=True) # Not fuzzy here
+                
+                if parsed_dt.tzinfo is None:
+                    now_utc = datetime.now(timezone.utc)
+                    parsed_dt_utc = parsed_dt.replace(tzinfo=timezone.utc)
+                    if parsed_dt_utc < now_utc and parsed_dt.time() == parsed_dt_utc.time():
+                        parsed_dt_utc += timedelta(days=1)
+                    session["datetime_obj"] = parsed_dt_utc
+                else:
+                    session["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
+                
+                session["state"] = "" # Mark as filled
+            except (ValueError, TypeError) as e:
+                logger.info(f"Could not parse datetime from user input '{text}': {e}")
+                response_text = "Não consegui entender a data/hora. Por favor, tente de novo (ex: amanhã às 14:30, 25/12 09:00, hoje 18h)."
+                self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
+                self._save_conversation_history(chat_id, response_text, True)
+                return
+        
+        # Check if all required fields are now filled
+        if not session.get("content"):
+            session["state"] = self.REMINDER_STATE_AWAITING_CONTENT
+        elif not session.get("datetime_obj"):
+            session["state"] = self.REMINDER_STATE_AWAITING_DATETIME
+        
+        if session["state"]: # Still something missing
+            self._ask_for_missing_reminder_info(chat_id, session)
+        else: # All info gathered
+            self._save_reminder_to_db(
+                chat_id, 
+                session["content"], 
+                session["datetime_obj"], 
+                session.get("recurrence", "none"), 
+                session["original_message_id"]
+            )
+            dt_obj = session["datetime_obj"]
+            response_text = f"Lembrete agendado para {dt_obj.strftime('%d/%m/%Y às %H:%M')} (UTC): {session['content']}"
+            if session.get("recurrence", "none") != "none":
+                response_text += f" (Recorrência: {session['recurrence']})"
+            
+            self.send_whatsapp_message(chat_id, response_text, reply_to=session["original_message_id"])
+            self._save_conversation_history(chat_id, response_text, True)
+            if chat_id in self.pending_reminder_sessions: # Clean up session
+                del self.pending_reminder_sessions[chat_id]
+
+    def _ask_for_missing_reminder_info(self, chat_id: str, session_data: Dict[str, Any]):
+        """Asks the user for the next piece of missing information."""
+        state = session_data["state"]
+        question = ""
+        if state == self.REMINDER_STATE_AWAITING_CONTENT:
+            question = "Ok! Qual é o conteúdo do lembrete? (O que devo te lembrar?)"
+        elif state == self.REMINDER_STATE_AWAITING_DATETIME:
+            question = "Entendido. Para quando devo agendar este lembrete? (Ex: amanhã às 10h, 25/12/2024 15:00, hoje 18:30)"
+        elif state == self.REMINDER_STATE_AWAITING_RECURRENCE: # Optional: not currently triggered unless logic changes
+            question = "Este lembrete deve se repetir? (Ex: diariamente, semanalmente, ou não)"
+        
+        if question:
+            self.send_whatsapp_message(chat_id, question, reply_to=session_data["original_message_id"])
+            self._save_conversation_history(chat_id, question, True)
+        else:
+            # This case should ideally not be reached if states are managed properly
+            logger.error(f"Reached _ask_for_missing_reminder_info with no question to ask for state {state}, session: {session_data}")
+
+
+    def _save_reminder_to_db(self, chat_id: str, content: str, reminder_time_utc: datetime, recurrence: str, original_message_id: str):
+        """Saves the complete reminder to Firestore."""
+        try:
+            doc_ref = self.db.collection("reminders").document() # Auto-generate ID
+            doc_ref.set({
+                "chat_id": chat_id,
+                "content": content,
+                "reminder_time_utc": reminder_time_utc, # Firestore will convert to its Timestamp type
+                "recurrence": recurrence, # "none", "daily", "weekly", "monthly", "yearly"
+                "is_active": True,
+                "created_at": firestore.SERVER_TIMESTAMP,
+                "last_sent_at": None, # For recurring reminders
+                "original_message_id": original_message_id,
+                "original_hour_utc": reminder_time_utc.hour, # Store original time components for recurrence
+                "original_minute_utc": reminder_time_utc.minute,
+            })
+            logger.info(f"Lembrete salvo no Firestore para {chat_id}: {content} @ {reminder_time_utc}")
+        except Exception as e:
+            logger.error(f"Erro ao salvar lembrete para {chat_id} no Firestore: {e}", exc_info=True)
+            # Inform user about failure?
+            self.send_whatsapp_message(chat_id, "Desculpe, não consegui salvar seu lembrete. Tente novamente mais tarde.", reply_to=original_message_id)
+            self._save_conversation_history(chat_id, "Desculpe, não consegui salvar seu lembrete. Tente novamente mais tarde.", True)
+
+    def _get_next_occurrence(self, last_occurrence_utc: datetime, recurrence: str, original_hour_utc: int, original_minute_utc: int) -> Optional[datetime]:
+        """Calculates the next occurrence time for a recurring reminder."""
+        next_occurrence = None
+        # Ensure the base for calculation is the last occurrence but with the original time of day
+        base_time = last_occurrence_utc.replace(hour=original_hour_utc, minute=original_minute_utc, second=0, microsecond=0)
+
+        if recurrence == "daily":
+            next_occurrence = base_time + timedelta(days=1)
+        elif recurrence == "weekly":
+            next_occurrence = base_time + timedelta(weeks=1)
+        elif recurrence == "monthly":
+            next_occurrence = base_time + relativedelta(months=1)
+        elif recurrence == "yearly":
+            next_occurrence = base_time + relativedelta(years=1)
+        
+        # Ensure it's in the future from the actual last_occurrence_utc time
+        # This handles cases where adding interval might still be in the past if original time was late in day
+        if next_occurrence and next_occurrence <= last_occurrence_utc:
+             # If adding the interval didn't push it past the current time (e.g. monthly on 31st to Feb)
+             # or if base_time + interval is still <= last_occurrence_utc (should not happen with timedelta > 0)
+             # Re-evaluate based on current time to ensure it's truly next
+             now_utc = datetime.now(timezone.utc)
+             while next_occurrence <= now_utc: # Keep adding interval until it's in the future
+                if recurrence == "daily": next_occurrence += timedelta(days=1)
+                elif recurrence == "weekly": next_occurrence += timedelta(weeks=1)
+                elif recurrence == "monthly": next_occurrence += relativedelta(months=1)
+                elif recurrence == "yearly": next_occurrence += relativedelta(years=1)
+                else: break # Should not happen
+
+        return next_occurrence
+
+
+    def _check_and_send_due_reminders(self):
+        """Checks Firestore for due reminders and sends them."""
+        now_utc = datetime.now(timezone.utc)
+        try:
+            reminders_query = (
+                self.db.collection("reminders")
+                .where(filter=FieldFilter("is_active", "==", True))
+                .where(filter=FieldFilter("reminder_time_utc", "<=", now_utc))
+            )
+            due_reminders = reminders_query.stream()
+
+            for reminder_doc in due_reminders:
+                reminder_data = reminder_doc.to_dict()
+                chat_id = reminder_data["content"]
+                content = reminder_data["content"]
+                recurrence = reminder_data.get("recurrence", "none")
+                reminder_id = reminder_doc.id
+                original_msg_id = reminder_data.get("original_message_id")
+                
+                # Firestore timestamps are datetime objects when read
+                reminder_time_utc = reminder_data["reminder_time_utc"] 
+                # Ensure it's timezone-aware (Firestore should return UTC)
+                if reminder_time_utc.tzinfo is None:
+                    reminder_time_utc = reminder_time_utc.replace(tzinfo=timezone.utc)
+
+                logger.info(f"Enviando lembrete ID {reminder_id} para {chat_id}: {content}")
+                
+                message_to_send = f"Não esqueça de: {content}"
+                
+                # Send the reminder message
+                success = self.send_whatsapp_message(chat_id, message_to_send, reply_to=None) # Don't reply to original msg for reminder itself
+
+                if success:
+                    self._save_conversation_history(chat_id, message_to_send, True) # Log bot's reminder
+                    
+                    update_data = {"last_sent_at": firestore.SERVER_TIMESTAMP}
+                    if recurrence == "none":
+                        update_data["is_active"] = False
+                        logger.info(f"Lembrete {reminder_id} (não recorrente) marcado como inativo.")
+                    else:
+                        original_hour = reminder_data.get("original_hour_utc", reminder_time_utc.hour)
+                        original_minute = reminder_data.get("original_minute_utc", reminder_time_utc.minute)
+                        
+                        next_occurrence_utc = self._get_next_occurrence(reminder_time_utc, recurrence, original_hour, original_minute)
+                        if next_occurrence_utc:
+                            update_data["reminder_time_utc"] = next_occurrence_utc
+                            logger.info(f"Lembrete {reminder_id} (recorrência: {recurrence}) reagendado para {next_occurrence_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                        else:
+                            update_data["is_active"] = False # Could not calculate next, deactivate
+                            logger.warning(f"Não foi possível calcular próxima ocorrência para lembrete {reminder_id}. Desativando.")
+                    
+                    self.db.collection("reminders").document(reminder_id).update(update_data)
+                else:
+                    logger.error(f"Falha ao enviar lembrete ID {reminder_id} para {chat_id}.")
+                    # Optionally, implement retry logic or mark as failed_to_send
+
+        except Exception as e:
+            logger.error(f"Erro ao verificar/enviar lembretes: {e}", exc_info=True)
+
+    def _cleanup_stale_pending_reminder_sessions(self):
+        """Cleans up pending reminder sessions that have timed out."""
+        now = datetime.now(timezone.utc)
+        stale_sessions = []
+        for chat_id, session_data in self.pending_reminder_sessions.items():
+            last_interaction = session_data.get("last_interaction")
+            if last_interaction and (now - last_interaction).total_seconds() > self.REMINDER_SESSION_TIMEOUT_SECONDS:
+                stale_sessions.append(chat_id)
+        
+        for chat_id in stale_sessions:
+            logger.info(f"Removendo sessão de criação de lembrete expirada para o chat {chat_id}.")
+            del self.pending_reminder_sessions[chat_id]
+            # Optionally notify user that the reminder creation was cancelled due to timeout
+            # self.send_whatsapp_message(chat_id, "A criação do lembrete foi cancelada por inatividade.", None)
 
     def _check_pending_messages(self, chat_id: str):
         """Verifica se deve processar as mensagens acumuladas para um chat específico."""
@@ -876,6 +1325,9 @@ class WhatsAppGeminiBot:
         try:
             logger.info("Iniciando loop principal de verificação do bot...")
             last_reengagement_check = datetime.now(timezone.utc)
+            last_reengagement_check = datetime.now(timezone.utc)
+            last_reminder_check = datetime.now(timezone.utc) - timedelta(seconds=self.REMINDER_CHECK_INTERVAL_SECONDS) # Check soon after start
+            last_pending_reminder_cleanup = datetime.now(timezone.utc)
             # last_summarization_check = datetime.now(timezone.utc) # _summarize_chat_history_if_needed é chamado após cada processamento
 
             while True:
@@ -890,7 +1342,17 @@ class WhatsAppGeminiBot:
                         self._check_inactive_chats()
                         last_reengagement_check = now
                     
-                    # 3. Outras tarefas de manutenção (resumo é chamado no _process_pending_messages)
+                    # 3. Verificar e enviar lembretes devidos
+                    if (now - last_reminder_check) >= timedelta(seconds=self.REMINDER_CHECK_INTERVAL_SECONDS):
+                        self._check_and_send_due_reminders()
+                        last_reminder_check = now
+
+                    # 4. Limpar sessões de criação de lembretes pendentes e expiradas
+                    if (now - last_pending_reminder_cleanup) >= timedelta(seconds=self.REMINDER_SESSION_TIMEOUT_SECONDS): # Check as often as timeout
+                        self._cleanup_stale_pending_reminder_sessions()
+                        last_pending_reminder_cleanup = now
+                    
+                    # 5. Outras tarefas de manutenção (resumo é chamado no _process_pending_messages)
 
                 except Exception as e:
                     logger.error(f"Erro no ciclo principal de verificação do bot: {e}", exc_info=True)

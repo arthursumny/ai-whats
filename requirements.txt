@@ -4,3 +4,4 @@ requests
 flask
 gunicorn
 google-cloud-firestore
+python-dateutil
