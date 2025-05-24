@@ -588,7 +588,7 @@ class WhatsAppGeminiBot:
 
         if not content:
             session_data["state"] = self.REMINDER_STATE_AWAITING_CONTENT
-        elif not datetime_obj:
+        elif not datetime_obj_utc:
             session_data["state"] = self.REMINDER_STATE_AWAITING_DATETIME
 
         if session_data["state"]:
@@ -596,9 +596,9 @@ class WhatsAppGeminiBot:
             self._ask_for_missing_reminder_info(chat_id, session_data)
         else:
             # All details found
-            self._save_reminder_to_db(chat_id, content, datetime_obj, recurrence, message_id)
+            self._save_reminder_to_db(chat_id, content, datetime_obj_utc, recurrence, message_id)
             datetime_local = datetime_obj_utc.astimezone(self.target_timezone)
-            response_text = f"Claro! \n\nLembrete agendado para {datetime_obj.strftime('%d/%m/%Y às %H:%M')}\n\n*{content}*"
+            response_text = f"Claro! \n\nLembrete agendado para {datetime_obj_utc.strftime('%d/%m/%Y às %H:%M')}\n\n*{content}*"
             if recurrence != "none":
                 response_text += f" (Recorrência: {recurrence})"
             self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
