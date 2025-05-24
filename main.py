@@ -629,8 +629,8 @@ class WhatsAppGeminiBot:
         elif current_state == self.REMINDER_STATE_AWAITING_DATETIME:
             try:
                 cleaned_text = self._clean_text_for_parsing(text)
-                # Aqui, esperamos que o usuário forneça apenas a data/hora, então fuzzy=False
-                parsed_dt_naive, _ = dateutil_parser.parse(cleaned_text, fuzzy_with_tokens=False, dayfirst=True)
+                # Corrigido: fuzzy_with_tokens=False retorna diretamente o datetime, não uma tupla.
+                parsed_dt_naive = dateutil_parser.parse(cleaned_text, fuzzy_with_tokens=False, dayfirst=True)
                 
                 if parsed_dt_naive.tzinfo is None:
                     localized_dt = self.target_timezone.localize(parsed_dt_naive, is_dst=None)
@@ -638,6 +638,8 @@ class WhatsAppGeminiBot:
                     localized_dt = parsed_dt_naive.astimezone(self.target_timezone)
                 
                 now_local = datetime.now(self.target_timezone)
+                # A data é considerada implícita se o usuário forneceu apenas a hora,
+                # o que resultaria em parsed_dt_naive tendo a data de hoje.
                 date_was_likely_implicit = (localized_dt.date() == now_local.date())
 
                 if date_was_likely_implicit and localized_dt < now_local:
@@ -649,6 +651,12 @@ class WhatsAppGeminiBot:
             except (ValueError, TypeError) as e:
                 logger.info(f"Could not parse datetime from user input '{text}': {e}")
                 response_text = "Não consegui entender a data/hora. Por favor, tente de novo (ex: amanhã às 14:30, 25/12 09:00, hoje 18h)."
+                self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
+                self._save_conversation_history(chat_id, response_text, True)
+                return
+            except Exception as e_general: # Captura outras exceções inesperadas durante o parse
+                logger.error(f"Erro inesperado ao parsear data/hora '{text}' em _handle_pending_reminder_interaction: {e_general}", exc_info=True)
+                response_text = "Ocorreu um erro ao processar a data/hora. Por favor, tente de novo (ex: hoje 18h)."
                 self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
                 self._save_conversation_history(chat_id, response_text, True)
                 return
