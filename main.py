@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from dateutil import parser as dateutil_parser # Added for reminder date parsing
 from dateutil.relativedelta import relativedelta # Added for recurrence
 import unicodedata
+import pytz
 
 
 # Carrega variáveis do .env
@@ -75,6 +76,7 @@ class WhatsAppGeminiBot:
     REMINDER_STATE_AWAITING_RECURRENCE = "awaiting_recurrence"
     REMINDER_SESSION_TIMEOUT_SECONDS = 300  # 5 minutes for pending reminder session
     REMINDER_CHECK_INTERVAL_SECONDS = 60 # Check for due reminders every 60 seconds
+    TARGET_TIMEZONE_NAME = 'America/Sao_Paulo'
 
     PORTUGUESE_DAYS_FOR_PARSING = {
         "segunda": "monday", "terça": "tuesday", "quarta": "wednesday",
@@ -93,6 +95,7 @@ class WhatsAppGeminiBot:
         self.reload_env()
         self.db = firestore.Client(project="voola-ai") # Seu projeto
         self.pending_timeout = 15  # Timeout para mensagens pendentes (em segundos)
+        self.target_timezone = pytz.timezone(self.TARGET_TIMEZONE_NAME) # Objeto pytz timezone
         
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
@@ -470,48 +473,48 @@ class WhatsAppGeminiBot:
         # Store the longest recurrence phrase found
         found_recurrence_phrase = ""
         for phrase, key in self.RECURRENCE_KEYWORDS.items():
-            match = re.search(r'\b' + phrase + r'\b', text_to_parse_for_datetime_and_content, re.IGNORECASE)
+            match = re.search(r'\b' + normalizar_texto(phrase) + r'\b', normalizar_texto(text_to_parse_for_datetime_and_content), re.IGNORECASE)
             if match:
-                if len(phrase) > len(found_recurrence_phrase): # Prioritize longer matches
-                    found_recurrence_phrase = match.group(0)
+                original_phrase_match = re.search(r'\b' + phrase + r'\b', text_to_parse_for_datetime_and_content, re.IGNORECASE)
+                if original_phrase_match and len(original_phrase_match.group(0)) > len(found_recurrence_phrase):
+                    found_recurrence_phrase = original_phrase_match.group(0)
                     details["recurrence"] = key
         
         if found_recurrence_phrase:
             text_to_parse_for_datetime_and_content = text_to_parse_for_datetime_and_content.replace(found_recurrence_phrase, "").strip()
 
-        # 2. Extract Datetime
-        # Use dateutil.parser.parse with fuzzy_with_tokens to separate date/time from other text
         cleaned_for_datetime_parsing = self._clean_text_for_parsing(text_to_parse_for_datetime_and_content)
         
-        # Try to parse, assuming the user is in the bot's system timezone (or we default to UTC interpretation)
-        # For more accuracy, one might need to know the user's timezone.
-        # `dayfirst=True` helps with DD/MM/YYYY formats common in Brazil.
         try:
-            # fuzzy_with_tokens returns (datetime_obj, tuple_of_non_datetime_tokens)
             parsed_datetime, non_datetime_tokens = dateutil_parser.parse(cleaned_for_datetime_parsing, fuzzy_with_tokens=True, dayfirst=True)
             
-            # Ensure the parsed datetime is timezone-aware (UTC)
-            if parsed_datetime.tzinfo is None:
-                # This assumes the time given is local to where the bot is running, then converts to UTC.
-                # A better approach might involve asking user for timezone or using a default.
-                # For now, let's assume it's intended as UTC if no TZ info, or make it local then UTC.
-                # Let's assume the parsed time is in the system's local timezone and convert to UTC.
-                # local_tz = datetime.now(timezone.utc).astimezone().tzinfo # Get local system timezone
-                # parsed_datetime = parsed_datetime.replace(tzinfo=local_tz)
-                # details["datetime_obj"] = parsed_datetime.astimezone(timezone.utc)
-                
-                # Simpler: if naive, assume it's for "today" in UTC context or a future date.
-                # dateutil often defaults to current day if only time is given.
-                # If it's in the past (e.g. parsed "10:00" as today 10:00 but it's already 11:00), advance it.
-                now_utc = datetime.now(timezone.utc)
-                parsed_datetime_utc = parsed_datetime.replace(tzinfo=timezone.utc) # Tentatively UTC
-
-                if parsed_datetime_utc < now_utc and parsed_datetime.time() == parsed_datetime_utc.time(): # if only time was given and it's past
-                     parsed_datetime_utc += timedelta(days=1)
-                details["datetime_obj"] = parsed_datetime_utc
-
-            else: # Already timezone-aware
+            if parsed_datetime.tzinfo is None or parsed_datetime.tzinfo.utcoffset(parsed_datetime) is None:
+                # Se for naive, assume que é no fuso horário local (TARGET_TIMEZONE_NAME)
+                localized_dt = self.target_timezone.localize(parsed_datetime, is_dst=None)
+                # Converte para UTC para armazenamento
+                details["datetime_obj"] = localized_dt.astimezone(timezone.utc)
+            else:
+                # Se já tiver fuso, converte para UTC
                 details["datetime_obj"] = parsed_datetime.astimezone(timezone.utc)
+
+            # Ajustar para o próximo dia se o horário resultante (em UTC) for no passado HOJE (apenas para horários sem data explícita)
+            # Isso é mais relevante se o usuário apenas diz "às 10h" e já passou das 10h UTC (que pode ser antes das 10h local)
+            # Vamos verificar se a data original parseada era "hoje" e se o tempo já passou no fuso local.
+            now_local = datetime.now(self.target_timezone)
+            # Se a data parseada (antes de converter pra UTC) for hoje e a hora já passou no fuso local
+            if details["datetime_obj"].astimezone(self.target_timezone).date() == now_local.date() and \
+               details["datetime_obj"].astimezone(self.target_timezone) < now_local and \
+               len(non_datetime_tokens) > 0: # Heurística: se non_datetime_tokens é longo, talvez a data não foi especificada
+                
+                # Verificamos se a data original parseada (antes de localizar) era hoje
+                original_parsed_date_is_today = (parsed_datetime.year == now_local.year and
+                                                 parsed_datetime.month == now_local.month and
+                                                 parsed_datetime.day == now_local.day)
+
+                if original_parsed_date_is_today and details["datetime_obj"].astimezone(self.target_timezone) < now_local:
+                     details["datetime_obj"] += timedelta(days=1)
+                     logger.info(f"Horário ajustado para o dia seguinte pois {details['datetime_obj'].astimezone(self.target_timezone)} já passou hoje ({now_local}). Novo UTC: {details['datetime_obj']}")
+
 
             # Reconstruct what was likely the datetime string from the original text
             # This is tricky. The non_datetime_tokens are parts *not* used.
@@ -527,6 +530,26 @@ class WhatsAppGeminiBot:
         except (ValueError, TypeError) as e:
             logger.info(f"Could not parse datetime from '{cleaned_for_datetime_parsing}': {e}")
             details["content"] = text_to_parse_for_datetime_and_content # If no date, all remaining is content
+
+        if details["content"]:
+            # Lista de palavras/preposições que podem ficar "presas" ao conteúdo antes da data/hora
+            # Adicionadas variações com acento e sem para maior robustez com normalizar_texto
+            trailing_words_to_remove = [
+                "as", "às", "hs", "hrs", "horas", "hora",
+                "em", "no", "na", "nos", "nas",
+                "para", "de", "do", "da", "dos", "das",
+                "pelas", "pelos", "a", "o"
+            ]
+            # Remover essas palavras se estiverem no final do conteúdo
+            content_words = details["content"].split()
+            if content_words:
+                last_word_normalized = normalizar_texto(content_words[-1])
+                if last_word_normalized in trailing_words_to_remove:
+                    details["content"] = " ".join(content_words[:-1]).strip()
+            
+            # Se o conteúdo restante for apenas uma dessas palavras, anular.
+            if normalizar_texto(details["content"]) in trailing_words_to_remove:
+                 details["content"] = None
         
         # If content is empty after extraction, it means the whole payload was date/recurrence
         if not details["content"] and payload_text and (details["datetime_obj"] or details["recurrence"] != "none"):
@@ -551,13 +574,13 @@ class WhatsAppGeminiBot:
         extracted_details = self._extract_reminder_details_from_text(text, chat_id)
         
         content = extracted_details.get("content")
-        datetime_obj = extracted_details.get("datetime_obj")
+        datetime_obj_utc = extracted_details.get("datetime_obj") # Já está em UTC
         recurrence = extracted_details.get("recurrence", "none")
 
         session_data = {
             "state": "",
             "content": content,
-            "datetime_obj": datetime_obj,
+            "datetime_obj": datetime_obj_utc,
             "recurrence": recurrence,
             "original_message_id": message_id,
             "last_interaction": datetime.now(timezone.utc)
@@ -567,10 +590,6 @@ class WhatsAppGeminiBot:
             session_data["state"] = self.REMINDER_STATE_AWAITING_CONTENT
         elif not datetime_obj:
             session_data["state"] = self.REMINDER_STATE_AWAITING_DATETIME
-        # Recurrence has a default ("none"), so we only ask if we want to confirm or change.
-        # For simplicity, we'll assume "none" if not specified and not ask unless we enhance this later.
-        # else if recurrence == "none": # Could ask "Deseja que este lembrete se repita?"
-        # session_data["state"] = self.REMINDER_STATE_AWAITING_RECURRENCE 
 
         if session_data["state"]:
             self.pending_reminder_sessions[chat_id] = session_data
@@ -578,7 +597,8 @@ class WhatsAppGeminiBot:
         else:
             # All details found
             self._save_reminder_to_db(chat_id, content, datetime_obj, recurrence, message_id)
-            response_text = f"Lembrete agendado para {datetime_obj.strftime('%d/%m/%Y às %H:%M')} (UTC): {content}"
+            datetime_local = datetime_obj_utc.astimezone(self.target_timezone)
+            response_text = f"Claro! \n\nLembrete agendado para {datetime_obj.strftime('%d/%m/%Y às %H:%M')}\n\n*{content}*"
             if recurrence != "none":
                 response_text += f" (Recorrência: {recurrence})"
             self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
@@ -620,19 +640,27 @@ class WhatsAppGeminiBot:
         elif current_state == self.REMINDER_STATE_AWAITING_DATETIME:
             try:
                 cleaned_text = self._clean_text_for_parsing(text)
-                # We expect the user to provide only the date/time here
-                parsed_dt, _ = dateutil_parser.parse(cleaned_text, fuzzy_with_tokens=False, dayfirst=True) # Not fuzzy here
+                parsed_dt, _ = dateutil_parser.parse(cleaned_text, fuzzy_with_tokens=False, dayfirst=True)
                 
-                if parsed_dt.tzinfo is None:
-                    now_utc = datetime.now(timezone.utc)
-                    parsed_dt_utc = parsed_dt.replace(tzinfo=timezone.utc)
-                    if parsed_dt_utc < now_utc and parsed_dt.time() == parsed_dt_utc.time():
-                        parsed_dt_utc += timedelta(days=1)
-                    session["datetime_obj"] = parsed_dt_utc
+                if parsed_dt.tzinfo is None or parsed_dt.tzinfo.utcoffset(parsed_dt) is None:
+                    # Se for naive, assume que é no fuso horário local (TARGET_TIMEZONE_NAME)
+                    localized_dt = self.target_timezone.localize(parsed_dt, is_dst=None)
+                     # Converte para UTC para armazenamento
+                    session["datetime_obj"] = localized_dt.astimezone(timezone.utc)
                 else:
+                    # Se já tiver fuso, converte para UTC
                     session["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
                 
-                session["state"] = "" # Mark as filled
+                now_local = datetime.now(self.target_timezone)
+                original_parsed_date_is_today = (parsed_dt.year == now_local.year and
+                                                 parsed_dt.month == now_local.month and
+                                                 parsed_dt.day == now_local.day)
+
+                if original_parsed_date_is_today and session["datetime_obj"].astimezone(self.target_timezone) < now_local:
+                     session["datetime_obj"] += timedelta(days=1)
+                     logger.info(f"Horário (interativo) ajustado para o dia seguinte. Novo UTC: {session['datetime_obj']}")
+
+                session["state"] = "" 
             except (ValueError, TypeError) as e:
                 logger.info(f"Could not parse datetime from user input '{text}': {e}")
                 response_text = "Não consegui entender a data/hora. Por favor, tente de novo (ex: amanhã às 14:30, 25/12 09:00, hoje 18h)."
@@ -656,8 +684,10 @@ class WhatsAppGeminiBot:
                 session.get("recurrence", "none"), 
                 session["original_message_id"]
             )
-            dt_obj = session["datetime_obj"]
-            response_text = f"Lembrete agendado para {dt_obj.strftime('%d/%m/%Y às %H:%M')} (UTC): {session['content']}"
+            dt_obj_utc = session["datetime_obj"]
+            dt_local = dt_obj_utc.astimezone(self.target_timezone)
+            response_text = f"Lembrete agendado para {dt_local.strftime('%d/%m/%Y às %H:%M')} ({self.target_timezone.zone}): {session['content']}"
+            
             if session.get("recurrence", "none") != "none":
                 response_text += f" (Recorrência: {session['recurrence']})"
             
@@ -753,24 +783,43 @@ class WhatsAppGeminiBot:
 
             for reminder_doc in due_reminders:
                 reminder_data = reminder_doc.to_dict()
-                chat_id = reminder_data.get("chat_id")
-                content = reminder_data["content"]
+                # Corrected: chat_id should be fetched from reminder_data["chat_id"]
+                chat_id = reminder_data.get("chat_id") 
+                content = reminder_data.get("content")
+                
+                if not chat_id:
+                    logger.error(f"Lembrete ID {reminder_doc.id} não possui chat_id. Dados: {reminder_data}")
+                    # Mark as inactive or log for investigation
+                    self.db.collection("reminders").document(reminder_doc.id).update({"is_active": False, "error_log": "Missing chat_id"})
+                    continue
+
+                if not content: # Should not happen if saved correctly, but good to check
+                    logger.error(f"Lembrete ID {reminder_doc.id} para chat {chat_id} não possui conteúdo. Dados: {reminder_data}")
+                    self.db.collection("reminders").document(reminder_doc.id).update({"is_active": False, "error_log": "Missing content"})
+                    continue
+
                 recurrence = reminder_data.get("recurrence", "none")
                 reminder_id = reminder_doc.id
                 original_msg_id = reminder_data.get("original_message_id")
                 
                 # Firestore timestamps are datetime objects when read
                 reminder_time_utc = reminder_data["reminder_time_utc"] 
-                # Ensure it's timezone-aware (Firestore should return UTC)
-                if reminder_time_utc.tzinfo is None:
+                if reminder_time_utc.tzinfo is None: # Garantir que é UTC
                     reminder_time_utc = reminder_time_utc.replace(tzinfo=timezone.utc)
 
-                logger.info(f"Enviando lembrete ID {reminder_id} para {chat_id}: {content}")
+                # Para o log, podemos mostrar a hora local do lembrete
+                reminder_time_local = reminder_time_utc.astimezone(self.target_timezone)
+                logger.info(f"Enviando lembrete ID {reminder_id} para {chat_id}: '{content}' agendado para {reminder_time_local.strftime('%d/%m/%Y %H:%M:%S %Z')}")
                 
-                message_to_send = f"Não esqueça de: {content}"
+                # A mensagem para o usuário não inclui a hora, então não precisa de conversão aqui.
+                # Mas se incluísse, seria:
+                # local_reminder_time_for_msg = reminder_time_utc.astimezone(self.target_timezone)
+                # message_to_send = f"Não esqueça de: {content} (agendado para {local_reminder_time_for_msg.strftime('%H:%M')})"
+                message_to_send = (f"Olá, estou passando aqui para te lembrar!\n\n"
+                                   f"Não esqueça de: {content}\n\n"
+                                   "Até logo 🙂")
                 
-                # Send the reminder message
-                success = self.send_whatsapp_message(chat_id, message_to_send, reply_to=None) # Don't reply to original msg for reminder itself
+                success = self.send_whatsapp_message(chat_id, message_to_send, reply_to=None)
 
                 if success:
                     self._save_conversation_history(chat_id, message_to_send, True) # Log bot's reminder
@@ -786,15 +835,15 @@ class WhatsAppGeminiBot:
                         next_occurrence_utc = self._get_next_occurrence(reminder_time_utc, recurrence, original_hour, original_minute)
                         if next_occurrence_utc:
                             update_data["reminder_time_utc"] = next_occurrence_utc
-                            logger.info(f"Lembrete {reminder_id} (recorrência: {recurrence}) reagendado para {next_occurrence_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                            next_occurrence_local = next_occurrence_utc.astimezone(self.target_timezone)
+                            logger.info(f"Lembrete {reminder_id} (recorrência: {recurrence}) reagendado para {next_occurrence_local.strftime('%Y-%m-%d %H:%M:%S %Z')} (UTC: {next_occurrence_utc.strftime('%Y-%m-%d %H:%M:%S %Z')})")
                         else:
-                            update_data["is_active"] = False # Could not calculate next, deactivate
+                            update_data["is_active"] = False 
                             logger.warning(f"Não foi possível calcular próxima ocorrência para lembrete {reminder_id}. Desativando.")
                     
                     self.db.collection("reminders").document(reminder_id).update(update_data)
                 else:
                     logger.error(f"Falha ao enviar lembrete ID {reminder_id} para {chat_id}.")
-                    # Optionally, implement retry logic or mark as failed_to_send
 
         except Exception as e:
             logger.error(f"Erro ao verificar/enviar lembretes: {e}", exc_info=True)
