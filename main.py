@@ -13,10 +13,23 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from datetime import datetime, timedelta, timezone
 from dateutil import parser as dateutil_parser # Added for reminder date parsing
 from dateutil.relativedelta import relativedelta # Added for recurrence
+import unicodedata
 
 
 # Carrega variáveis do .env
 load_dotenv()
+
+def normalizar_texto(texto):
+    # Remove acentos
+    texto = unicodedata.normalize('NFD', texto)
+    texto = texto.encode('ascii', 'ignore').decode('utf-8')
+    # Converte para minúsculo
+    texto = texto.lower()
+    # Remove espaços duplicados
+    texto = re.sub(r'\s+', ' ', texto)
+    # Remove espaços no início/fim
+    texto = texto.strip()
+    return texto
 
 # Configuração de logs
 logging.basicConfig(
@@ -40,7 +53,23 @@ class WhatsAppGeminiBot:
     ]
 
     # Reminder feature constants
-    REMINDER_REQUEST_KEYWORDS_REGEX = r"(me\s+lembre|lembre-me|criar\s+lembrete|novo\s+lembrete|lembrete\s+para|agendar\s+lembrete|anotar\s+lembrete|nao\s+me\s+deixe\s+esquecer|nao\s+esquecer\s+de)"
+    REMINDER_REQUEST_KEYWORDS_REGEX = r"""(?x)
+(
+    (me\s+(lembre|lembra)(-?me)?(\s+de)?)
+    |
+    ((criar|crie|novo|adicione?|anote|agende|agendar)\s+(um\s+)?lembrete)
+    |
+    (lembrete\s+para)
+    |
+    (nao\s+(me\s+)?(deixe|deixa|quero|posso)?\s*(me\s+)?esquecer(\s+de)?)
+    |
+    (me\s+(avise|avisa|recorde|recorda|notifique?|notifica|alerte?|alerta)(\s+de|\s+para)?)
+    |
+    (me\s+ajud[ae]\s+a\s+lembrar(\s+de)?)
+    |
+    (nao\s+se\s+esqueca\s+de(\s+me\s+avisar)?)
+)
+"""
     REMINDER_STATE_AWAITING_CONTENT = "awaiting_content"
     REMINDER_STATE_AWAITING_DATETIME = "awaiting_datetime"
     REMINDER_STATE_AWAITING_RECURRENCE = "awaiting_recurrence"
@@ -724,7 +753,7 @@ class WhatsAppGeminiBot:
 
             for reminder_doc in due_reminders:
                 reminder_data = reminder_doc.to_dict()
-                chat_id = reminder_data["content"]
+                chat_id = reminder_data.get("chat_id")
                 content = reminder_data["content"]
                 recurrence = reminder_data.get("recurrence", "none")
                 reminder_id = reminder_doc.id
