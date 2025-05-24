@@ -486,50 +486,39 @@ class WhatsAppGeminiBot:
         cleaned_for_datetime_parsing = self._clean_text_for_parsing(text_to_parse_for_datetime_and_content)
         
         try:
-            parsed_datetime, non_datetime_tokens = dateutil_parser.parse(cleaned_for_datetime_parsing, fuzzy_with_tokens=True, dayfirst=True)
+            # dateutil.parser.parse pode retornar um datetime naive.
+            # fuzzy_with_tokens retorna (datetime_obj, tupla_de_tokens_nao_datetime)
+            parsed_datetime_naive, non_datetime_tokens = dateutil_parser.parse(cleaned_for_datetime_parsing, fuzzy_with_tokens=True, dayfirst=True)
             
-            if parsed_datetime.tzinfo is None or parsed_datetime.tzinfo.utcoffset(parsed_datetime) is None:
-                # Se for naive, assume que é no fuso horário local (TARGET_TIMEZONE_NAME)
-                localized_dt = self.target_timezone.localize(parsed_datetime, is_dst=None)
-                # Converte para UTC para armazenamento
-                details["datetime_obj"] = localized_dt.astimezone(timezone.utc)
+            # 1. Localizar para o fuso horário alvo (America/Sao_Paulo)
+            # Se parsed_datetime_naive já tiver tzinfo, astimezone para target_timezone. Senão, localize.
+            if parsed_datetime_naive.tzinfo is None:
+                localized_dt = self.target_timezone.localize(parsed_datetime_naive, is_dst=None)
             else:
-                # Se já tiver fuso, converte para UTC
-                details["datetime_obj"] = parsed_datetime.astimezone(timezone.utc)
+                # Se já tem fuso (improvável com fuzzy_with_tokens sem info de fuso no texto), converte pro nosso alvo
+                localized_dt = parsed_datetime_naive.astimezone(self.target_timezone)
 
-            # Ajustar para o próximo dia se o horário resultante (em UTC) for no passado HOJE (apenas para horários sem data explícita)
-            # Isso é mais relevante se o usuário apenas diz "às 10h" e já passou das 10h UTC (que pode ser antes das 10h local)
-            # Vamos verificar se a data original parseada era "hoje" e se o tempo já passou no fuso local.
+            # 2. Verificar se o horário é no passado para "hoje" e ajustar se necessário
             now_local = datetime.now(self.target_timezone)
-            # Se a data parseada (antes de converter pra UTC) for hoje e a hora já passou no fuso local
-            if details["datetime_obj"].astimezone(self.target_timezone).date() == now_local.date() and \
-               details["datetime_obj"].astimezone(self.target_timezone) < now_local and \
-               len(non_datetime_tokens) > 0: # Heurística: se non_datetime_tokens é longo, talvez a data não foi especificada
-                
-                # Verificamos se a data original parseada (antes de localizar) era hoje
-                original_parsed_date_is_today = (parsed_datetime.year == now_local.year and
-                                                 parsed_datetime.month == now_local.month and
-                                                 parsed_datetime.day == now_local.day)
+            
+            # Heurística para saber se a data foi explicitamente fornecida ou inferida como "hoje"
+            # Se non_datetime_tokens contiver a maior parte do input original, é provável que a data não foi explícita.
+            # Ou, se a data em localized_dt é a mesma de now_local.
+            date_was_likely_implicit = (localized_dt.date() == now_local.date())
 
-                if original_parsed_date_is_today and details["datetime_obj"].astimezone(self.target_timezone) < now_local:
-                     details["datetime_obj"] += timedelta(days=1)
-                     logger.info(f"Horário ajustado para o dia seguinte pois {details['datetime_obj'].astimezone(self.target_timezone)} já passou hoje ({now_local}). Novo UTC: {details['datetime_obj']}")
-
-
-            # Reconstruct what was likely the datetime string from the original text
-            # This is tricky. The non_datetime_tokens are parts *not* used.
-            # So, the original text minus these tokens is roughly the datetime string.
+            if date_was_likely_implicit and localized_dt < now_local:
+                logger.info(f"Horário local parseado ({localized_dt.strftime('%H:%M:%S %Z')}) é anterior ao atual ({now_local.strftime('%H:%M:%S %Z')}) e data era implícita. Ajustando para o dia seguinte.")
+                localized_dt += timedelta(days=1)
+            
+            # 3. Converter o datetime (agora ajustado e no fuso local) para UTC para armazenamento
+            details["datetime_obj"] = localized_dt.astimezone(timezone.utc)
+            
             temp_content_parts = [token.strip() for token in non_datetime_tokens if token.strip()]
             details["content"] = " ".join(temp_content_parts).strip()
             
-            # Try to find the original datetime string (this is an approximation)
-            # We need to find what part of `text_to_parse_for_datetime_and_content` became `details["datetime_obj"]`
-            # This is complex. For now, we'll just use the successfully parsed object.
-            # details["original_datetime_str"] = "extracted datetime part" # Placeholder
-
         except (ValueError, TypeError) as e:
             logger.info(f"Could not parse datetime from '{cleaned_for_datetime_parsing}': {e}")
-            details["content"] = text_to_parse_for_datetime_and_content # If no date, all remaining is content
+            details["content"] = text_to_parse_for_datetime_and_content
 
         if details["content"]:
             # Lista de palavras/preposições que podem ficar "presas" ao conteúdo antes da data/hora
@@ -598,7 +587,7 @@ class WhatsAppGeminiBot:
             # All details found
             self._save_reminder_to_db(chat_id, content, datetime_obj_utc, recurrence, message_id)
             datetime_local = datetime_obj_utc.astimezone(self.target_timezone)
-            response_text = f"Claro! \n\nLembrete agendado para {datetime_obj_utc.strftime('%d/%m/%Y às %H:%M')}\n\n*{content}*"
+            response_text = f"Claro! \n\nLembrete agendado para {datetime_local.strftime('%d/%m/%Y às %H:%M')}\n\n*{content}*"
             if recurrence != "none":
                 response_text += f" (Recorrência: {recurrence})"
             self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
@@ -640,26 +629,22 @@ class WhatsAppGeminiBot:
         elif current_state == self.REMINDER_STATE_AWAITING_DATETIME:
             try:
                 cleaned_text = self._clean_text_for_parsing(text)
-                parsed_dt, _ = dateutil_parser.parse(cleaned_text, fuzzy_with_tokens=False, dayfirst=True)
+                # Aqui, esperamos que o usuário forneça apenas a data/hora, então fuzzy=False
+                parsed_dt_naive, _ = dateutil_parser.parse(cleaned_text, fuzzy_with_tokens=False, dayfirst=True)
                 
-                if parsed_dt.tzinfo is None or parsed_dt.tzinfo.utcoffset(parsed_dt) is None:
-                    # Se for naive, assume que é no fuso horário local (TARGET_TIMEZONE_NAME)
-                    localized_dt = self.target_timezone.localize(parsed_dt, is_dst=None)
-                     # Converte para UTC para armazenamento
-                    session["datetime_obj"] = localized_dt.astimezone(timezone.utc)
+                if parsed_dt_naive.tzinfo is None:
+                    localized_dt = self.target_timezone.localize(parsed_dt_naive, is_dst=None)
                 else:
-                    # Se já tiver fuso, converte para UTC
-                    session["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
+                    localized_dt = parsed_dt_naive.astimezone(self.target_timezone)
                 
                 now_local = datetime.now(self.target_timezone)
-                original_parsed_date_is_today = (parsed_dt.year == now_local.year and
-                                                 parsed_dt.month == now_local.month and
-                                                 parsed_dt.day == now_local.day)
+                date_was_likely_implicit = (localized_dt.date() == now_local.date())
 
-                if original_parsed_date_is_today and session["datetime_obj"].astimezone(self.target_timezone) < now_local:
-                     session["datetime_obj"] += timedelta(days=1)
-                     logger.info(f"Horário (interativo) ajustado para o dia seguinte. Novo UTC: {session['datetime_obj']}")
-
+                if date_was_likely_implicit and localized_dt < now_local:
+                    logger.info(f"Horário local (interativo) parseado ({localized_dt.strftime('%H:%M:%S %Z')}) é anterior ao atual ({now_local.strftime('%H:%M:%S %Z')}) e data era implícita. Ajustando para o dia seguinte.")
+                    localized_dt += timedelta(days=1)
+                
+                session["datetime_obj"] = localized_dt.astimezone(timezone.utc)
                 session["state"] = "" 
             except (ValueError, TypeError) as e:
                 logger.info(f"Could not parse datetime from user input '{text}': {e}")
