@@ -54,21 +54,65 @@ class WhatsAppGeminiBot:
     ]
 
     # Reminder feature constants
-    REMINDER_REQUEST_KEYWORDS_REGEX = r"""(?x)
+    # Lists for cleaning reminder content
+    leading_words_to_strip_normalized = [
+        "de", "para", "que", "sobre", "do", "da", "dos", "das",
+        "me", "mim", "nos", "pra", "pro", "pros", "pras"
+    ]
+
+    trailing_phrases_to_strip_normalized = [
+        "as", "às", "hs", "hrs", "horas", "hora",
+        "em", "no", "na", "nos", "nas",
+        "para", "de", "do", "da", "dos", "das",
+        "pelas", "pelos", "a", "o", "amanha",
+        "hoje", "la", "lá", "por", "volta",
+        "depois", "antes", "proximo", "proxima"
+    ]
+
+    REMINDER_REQUEST_KEYWORDS_REGEX = r"""(?ix)
 (
-    (me\s+(lembre|lembra)(-?me)?(\s+de)?)
+    # Pattern 1: "me lembre/avise/alerte"
+    (?: (?:pode|voce|poderia|consegue|da|dá|vai|preciso)\s+)?
+    (?:
+        me\s+(?:lembre|lembra|lembrar|avise|avisa|avisar|alerte|alerta|alertar|recorde|recorda|recordar|notifique|notifica|notificar)
+        |
+        (?:lembre|lembra|lembrar|avise|avisa|avisar|alerte|alerta|alertar|recorde|recorda|recordar|notifique|notifica|notificar)\s*-?\s*me
+    )
+    (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
     |
-    ((criar|crie|novo|adicione?|anote|agende|agendar)\s+(um\s+)?lembrete)
+    # Pattern 2: "criar/fazer lembrete"
+    (?:
+        (?:faça|fazer|crie|criar|adicione|adicionar|anote|anotar|agende|agendar|coloque|colocar|bote|botar|marque|marcar)\s+
+        (?:um|o|esse|este|aquele|um novo|o novo)?\s*
+        (?:novo\s+)?
+        lembrete
+    )
+    (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
     |
-    (lembrete\s+para)
+    # Pattern 3: "lembrete para/de"
+    lembrete\s+(?:para|de|sobre|do|da|dos|das)
     |
-    (nao\s+(me\s+)?(deixe|deixa|quero|posso)?\s*(me\s+)?esquecer(\s+de)?)
+    # Pattern 4: "não me deixe esquecer"
+    (?:nao|não)\s+
+    (?:
+        (?:me\s+)?(?:deixe|deixa|quero|posso|vai|vá)\s*(?:me\s+)?esquecer
+        |
+        (?:se\s+)?esquecer?
+        |
+        se\s+esqueca
+    )
+    (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
     |
-    (me\s+(avise|avisa|recorde|recorda|notifique?|notifica|alerte?|alerta)(\s+de|\s+para)?)
+    # Pattern 5: "me ajude a lembrar"
+    (?: (?:pode|voce|poderia|consegue)\s+)?
+    me\s+ajud[ae]\s+a\s+lembrar
+    (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
     |
-    (me\s+ajud[ae]\s+a\s+lembrar(\s+de)?)
-    |
-    (nao\s+se\s+esqueca\s+de(\s+me\s+avisar)?)
+    # Pattern 6: "preciso me lembrar"
+    (?:preciso|necessito|quero|gostaria)\s+
+    (?:me\s+)?
+    (?:lembrar|recordar|não\s+esquecer)
+    (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
 )
 """
     REMINDER_STATE_AWAITING_CONTENT = "awaiting_content"
@@ -448,107 +492,112 @@ class WhatsAppGeminiBot:
 
     def _extract_reminder_details_from_text(self, text: str, chat_id: str) -> Dict[str, Any]:
         """
-        Extracts content, datetime, and recurrence from text.
-        This is a simplified version and can be improved with more robust regex.
+        Extracts content, datetime, and recurrence from text with improved accuracy.
         """
         details = {
             "content": None,
             "datetime_obj": None,
-            "recurrence": "none", # Default if not specified
-            "original_datetime_str": None # Store the part of text identified as datetime
+            "recurrence": "none",
+            "original_datetime_str": None
         }
-        
-        # Remove reminder keywords to isolate payload
+
+        logger.info(f"Extracting reminder details from text: '{text}'")
+
+        # 1. Initial cleanup: remove reminder keywords to isolate payload
         payload_text = re.sub(self.REMINDER_REQUEST_KEYWORDS_REGEX, "", text, flags=re.IGNORECASE).strip()
-        # Also remove common prepositions that might precede the actual content after keywords
-        payload_text = re.sub(r"^(de|para|que)\s+", "", payload_text, flags=re.IGNORECASE).strip()
+        logger.debug(f"After removing keywords: '{payload_text}'")
+
+        # Remove common leading words/prepositions that might precede the actual content
+        for word in self.leading_words_to_strip_normalized:
+            pattern = r"^\s*" + re.escape(word) + r"\s+"
+            payload_text = re.sub(pattern, "", normalizar_texto(payload_text), flags=re.IGNORECASE).strip()
+        logger.debug(f"After removing leading words: '{payload_text}'")
 
         if not payload_text:
-            return details # Not enough info
+            logger.info("No payload text after initial cleanup")
+            return details
 
-        text_to_parse_for_datetime_and_content = payload_text
-        
-        # 1. Extract Recurrence
-        # Iterate and remove recurrence phrases first, as they are more distinct
-        # Store the longest recurrence phrase found
+        text_to_parse = payload_text
+
+        # 2. Extract Recurrence (if any)
         found_recurrence_phrase = ""
         for phrase, key in self.RECURRENCE_KEYWORDS.items():
-            match = re.search(r'\b' + normalizar_texto(phrase) + r'\b', normalizar_texto(text_to_parse_for_datetime_and_content), re.IGNORECASE)
+            normalized_phrase = normalizar_texto(phrase)
+            normalized_text = normalizar_texto(text_to_parse)
+            match = re.search(r'\b' + re.escape(normalized_phrase) + r'\b', normalized_text, re.IGNORECASE)
             if match:
-                original_phrase_match = re.search(r'\b' + phrase + r'\b', text_to_parse_for_datetime_and_content, re.IGNORECASE)
+                # Find the original phrase in the original text
+                original_phrase_match = re.search(r'\b' + re.escape(phrase) + r'\b', text_to_parse, re.IGNORECASE)
                 if original_phrase_match and len(original_phrase_match.group(0)) > len(found_recurrence_phrase):
                     found_recurrence_phrase = original_phrase_match.group(0)
                     details["recurrence"] = key
-        
+                    logger.debug(f"Found recurrence: {key} from phrase '{found_recurrence_phrase}'")
+
         if found_recurrence_phrase:
-            text_to_parse_for_datetime_and_content = text_to_parse_for_datetime_and_content.replace(found_recurrence_phrase, "").strip()
+            text_to_parse = text_to_parse.replace(found_recurrence_phrase, "").strip()
+            logger.debug(f"After removing recurrence: '{text_to_parse}'")
 
-        cleaned_for_datetime_parsing = self._clean_text_for_parsing(text_to_parse_for_datetime_and_content)
-        
+        # 3. Parse DateTime
+        cleaned_for_datetime = self._clean_text_for_parsing(text_to_parse)
         try:
-            # dateutil.parser.parse pode retornar um datetime naive.
-            # fuzzy_with_tokens retorna (datetime_obj, tupla_de_tokens_nao_datetime)
-            parsed_datetime_naive, non_datetime_tokens = dateutil_parser.parse(cleaned_for_datetime_parsing, fuzzy_with_tokens=True, dayfirst=True)
-            
-            # 1. Localizar para o fuso horário alvo (America/Sao_Paulo)
-            # Se parsed_datetime_naive já tiver tzinfo, astimezone para target_timezone. Senão, localize.
-            if parsed_datetime_naive.tzinfo is None:
-                localized_dt = self.target_timezone.localize(parsed_datetime_naive, is_dst=None)
+            parsed_dt_naive, non_datetime_tokens = dateutil_parser.parse(
+                cleaned_for_datetime,
+                fuzzy_with_tokens=True,
+                dayfirst=True
+            )
+
+            # Localize to target timezone
+            if parsed_dt_naive.tzinfo is None:
+                localized_dt = self.target_timezone.localize(parsed_dt_naive, is_dst=None)
             else:
-                # Se já tem fuso (improvável com fuzzy_with_tokens sem info de fuso no texto), converte pro nosso alvo
-                localized_dt = parsed_datetime_naive.astimezone(self.target_timezone)
+                localized_dt = parsed_dt_naive.astimezone(self.target_timezone)
 
-            # 2. Verificar se o horário é no passado para "hoje" e ajustar se necessário
+            # Check if time is in past
             now_local = datetime.now(self.target_timezone)
-            
-            # Heurística para saber se a data foi explicitamente fornecida ou inferida como "hoje"
-            # Se non_datetime_tokens contiver a maior parte do input original, é provável que a data não foi explícita.
-            # Ou, se a data em localized_dt é a mesma de now_local.
-            date_was_likely_implicit = (localized_dt.date() == now_local.date())
+            date_was_implicit = (localized_dt.date() == now_local.date())
 
-            if date_was_likely_implicit and localized_dt < now_local:
-                logger.info(f"Horário local parseado ({localized_dt.strftime('%H:%M:%S %Z')}) é anterior ao atual ({now_local.strftime('%H:%M:%S %Z')}) e data era implícita. Ajustando para o dia seguinte.")
+            if date_was_implicit and localized_dt < now_local:
+                logger.info(f"Adjusting past time {localized_dt.strftime('%H:%M:%S')} to next day")
                 localized_dt += timedelta(days=1)
-            
-            # 3. Converter o datetime (agora ajustado e no fuso local) para UTC para armazenamento
+
             details["datetime_obj"] = localized_dt.astimezone(timezone.utc)
-            
-            temp_content_parts = [token.strip() for token in non_datetime_tokens if token.strip()]
-            details["content"] = " ".join(temp_content_parts).strip()
-            
+            logger.debug(f"Parsed datetime (UTC): {details['datetime_obj']}")
+
+            # Extract content from non-datetime parts
+            content_parts = [token.strip() for token in non_datetime_tokens if token.strip()]
+            initial_content = " ".join(content_parts).strip()
+            logger.debug(f"Initial content from non-datetime tokens: '{initial_content}'")
+
         except (ValueError, TypeError) as e:
-            logger.info(f"Could not parse datetime from '{cleaned_for_datetime_parsing}': {e}")
-            details["content"] = text_to_parse_for_datetime_and_content
+            logger.info(f"DateTime parsing failed: {e}")
+            initial_content = text_to_parse
 
-        if details["content"]:
-            # Lista de palavras/preposições que podem ficar "presas" ao conteúdo antes da data/hora
-            # Adicionadas variações com acento e sem para maior robustez com normalizar_texto
-            trailing_words_to_remove = [
-                "as", "às", "hs", "hrs", "horas", "hora",
-                "em", "no", "na", "nos", "nas",
-                "para", "de", "do", "da", "dos", "das",
-                "pelas", "pelos", "a", "o"
-            ]
-            # Remover essas palavras se estiverem no final do conteúdo
-            content_words = details["content"].split()
-            if content_words:
-                last_word_normalized = normalizar_texto(content_words[-1])
-                if last_word_normalized in trailing_words_to_remove:
-                    details["content"] = " ".join(content_words[:-1]).strip()
-            
-            # Se o conteúdo restante for apenas uma dessas palavras, anular.
-            if normalizar_texto(details["content"]) in trailing_words_to_remove:
-                 details["content"] = None
-        
-        # If content is empty after extraction, it means the whole payload was date/recurrence
-        if not details["content"] and payload_text and (details["datetime_obj"] or details["recurrence"] != "none"):
-             details["content"] = None # Explicitly mark as not found if only date/recurrence was in payload
+        # 4. Clean up content
+        if initial_content:
+            # Clean trailing phrases
+            content_words = initial_content.split()
+            while content_words and any(
+                normalizar_texto(content_words[-1]) == word
+                for word in self.trailing_phrases_to_strip_normalized
+            ):
+                content_words.pop()
+                logger.debug(f"Removed trailing word, remaining: '{' '.join(content_words)}'")
 
-        # Final cleanup of content: remove reminder keywords again if they somehow survived
-        if details["content"]:
-            details["content"] = re.sub(self.REMINDER_REQUEST_KEYWORDS_REGEX, "", details["content"], flags=re.IGNORECASE).strip()
-            details["content"] = re.sub(r"^(de|para|que)\s+", "", details["content"], flags=re.IGNORECASE).strip()
-            if not details["content"]: details["content"] = None
+            cleaned_content = " ".join(content_words).strip()
+
+            # Remove any surviving reminder keywords or common words
+            cleaned_content = re.sub(self.REMINDER_REQUEST_KEYWORDS_REGEX, "", cleaned_content, flags=re.IGNORECASE).strip()
+
+            # Final validation
+            if cleaned_content and not any(
+                normalizar_texto(cleaned_content) == word
+                for word in self.trailing_phrases_to_strip_normalized + self.leading_words_to_strip_normalized
+            ):
+                details["content"] = cleaned_content
+                logger.info(f"Final extracted content: '{cleaned_content}'")
+            else:
+                logger.info("Content was invalid or only contained common words")
+                details["content"] = None
 
         return details
 
@@ -1141,16 +1190,13 @@ class WhatsAppGeminiBot:
     def _send_reengagement_message(self, chat_id: str):
         """Envia mensagem de reengajamento gerada pelo Gemini com base no histórico."""
         try:
-            # Construir um prompt para o Gemini com base no histórico e resumo
-            # Usaremos o build_context_prompt, mas o "current_prompt_text" será uma instrução
-            # para o Gemini gerar a mensagem de reengajamento.
             
             # Obter resumo (se houver) e histórico recente
             summary_ref = self.db.collection("conversation_summaries").document(chat_id)
             summary_doc = summary_ref.get()
             summary_text = summary_doc.get("summary") if summary_doc.exists else ""
 
-            history_list = self._get_conversation_history(chat_id, limit=10) # Últimas 10 trocas
+            history_list = self._get_conversation_history(chat_id, limit=100) # Últimas 10 trocas
             
             history_parts_reengagement = []
             for msg in history_list:
@@ -1159,13 +1205,27 @@ class WhatsAppGeminiBot:
             history_str_reengagement = "\n".join(history_parts_reengagement)
 
             reengagement_instruction = (
-                "O usuário deste chat não interage há algum tempo (cerca de 36 horas ou mais).\n"
-                "Com base no resumo e/ou no histórico recente da nossa conversa (se disponível abaixo), "
-                "gere uma mensagem curta, amigável e personalizada para reengajá-lo. \n"
-                "Você pode, por exemplo, perguntar se ele ainda precisa de ajuda com o último tópico discutido, "
-                "sugerir continuar a conversa, ou simplesmente perguntar como você pode ser útil hoje. \n"
-                "Se não houver histórico ou resumo, apenas envie uma saudação amigável perguntando como pode ajudar.\n"
-                "Seja conciso e natural.\n\n"
+                "O usuário deste chat não interage há algum tempo (cerca de 36 horas ou mais). "
+                "Seu objetivo é gerar uma mensagem de reengajamento curta, amigável e personalizada, focando em despertar o interesse do usuário e incentivá-lo a retomar a conversa. "
+                "Siga as seguintes diretrizes, priorizando as opções de reengajamento mais relevantes e interessantes:"
+                "\n\n"
+                "1. **Análise do histórico:** Primeiramente, examine o histórico de conversa do usuário e/ou o resumo da conversa (se disponível). "
+                "   - **Tópico recente:** Se houver um tópico recente claramente definido, comece por perguntar se ele ainda precisa de ajuda ou se gostaria de continuar a discussão sobre esse assunto. "
+                "   - **Interesses inferidos:** Tente identificar interesses ou temas recorrentes no histórico de conversa. Use esses insights para sugerir tópicos relacionados ou informações adicionais que possam ser do seu interesse."
+                "\n\n"
+                "2. **Pesquisa web para assuntos relacionados:** Se o histórico de conversa permitir a identificação de tópicos ou interesses, faça uma pesquisa web para encontrar notícias recentes, curiosidades ou desenvolvimentos relevantes sobre esses temas. "
+                "   - Apresente uma breve e intrigante informação encontrada, convidando o usuário a explorar mais."
+                "\n\n"
+                "3. **Criatividade e assuntos aleatórios:** Se não houver histórico de conversa substancial ou se os interesses do usuário não forem claros, use sua criatividade para puxar um assunto aleatório, mas que seja potencialmente interessante. "
+                "   - Você pode: "
+                "     - Mencionar uma notícia popular ou um evento atual (se relevante e não sensível). "
+                "     - Fazer uma pergunta curiosa sobre um tema geral (tecnologia, ciência, cultura, etc.). "
+                "     - Sugerir uma nova funcionalidade ou capacidade do Gemini (se aplicável). "
+                "\n\n"
+                "4. **Abertura geral:** Se as opções acima não se aplicarem ou não forem eficazes, ou se você precisar de uma alternativa mais genérica, envie uma saudação amigável perguntando simplesmente como pode ser útil hoje ou como o usuário está. "
+                "\n\n"
+                "5. **Tom e concisão:** Mantenha a mensagem concisa, natural e convidativa. Evite parecer robótico ou excessivamente formal. O objetivo é reaquecer a interação de forma orgânica. "
+                "   - Exemplo de saudação amigável: 'Oi! Já faz um tempinho que não conversamos. Como posso te ajudar hoje?'"
             )
 
             context_for_reengagement_prompt = ""
@@ -1181,11 +1241,17 @@ class WhatsAppGeminiBot:
 
             logger.info(f"Gerando mensagem de reengajamento para {chat_id} com prompt: {full_reengagement_prompt[:300]}...")
 
-            # Gerar a mensagem de reengajamento usando Gemini (sem tools aqui, só geração de texto)
+            google_search_tool = Tool(google_search=GoogleSearch())
+
             reengagement_response = self.client.models.generate_content(
                 model=self.gemini_model_name,
                 contents=full_reengagement_prompt,
-                config=self.model_config
+                config=GenerateContentConfig(
+                    tools=[google_search_tool],
+                    response_modalities=["TEXT"],
+                    system_instruction=self.gemini_context,
+                    temperature=0.85
+                )
             )
             reengagement_message_text = reengagement_response.text.strip()
 
