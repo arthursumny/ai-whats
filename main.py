@@ -513,6 +513,165 @@ class WhatsAppGeminiBot:
         self._save_pending_message(chat_id, pending_payload, from_name) # Passar from_name aqui
         logger.info(f"Mensagem de {from_name} ({chat_id}) adicionada à fila pendente. Tipo: {processed_type_internal}.")
 
+    def _handle_pending_cancellation_interaction(self, chat_id: str, text: str, message_id: str):
+        """Handles user's choice when cancelling a reminder from a list."""
+        if chat_id not in self.pending_cancellation_sessions:
+            logger.warning(f"Nenhuma sessão de cancelamento pendente para {chat_id}")
+            # Optionally send a message if this state is reached unexpectedly
+            # self.send_whatsapp_message(chat_id, "Desculpe, não encontrei uma solicitação de cancelamento ativa.", reply_to=message_id)
+            return
+
+        session = self.pending_cancellation_sessions[chat_id]
+        session["last_interaction"] = datetime.now(timezone.utc)
+        user_input_normalized = normalizar_texto(text.strip())
+
+        original_message_id_session = session.get("original_message_id", message_id)
+
+        if user_input_normalized in ["cancelar", "cancela", "nenhum", "nao"]:
+            del self.pending_cancellation_sessions[chat_id]
+            response_text = "Ok, nenhum lembrete foi cancelado."
+            self.send_whatsapp_message(chat_id, response_text, reply_to=original_message_id_session)
+            self._save_conversation_history(chat_id, response_text, True)
+            return
+
+        reminders_options = session.get("reminders_options", []) # Lista de dicionários com 'id' e 'text_summary'
+
+        if user_input_normalized == "todos":
+            cancelled_count = 0
+            if not reminders_options:
+                 response_text = "Não há lembretes na lista para cancelar."
+            else:
+                for opt in reminders_options: # Cancel only from the presented list
+                    if self._deactivate_reminder_in_db(opt["id"]):
+                        cancelled_count += 1
+                if cancelled_count > 0:
+                    response_text = f"{cancelled_count} lembrete(s) da lista foram cancelados."
+                else:
+                    response_text = "Não foi possível cancelar os lembretes da lista. Tente novamente."
+            
+            del self.pending_cancellation_sessions[chat_id]
+            self.send_whatsapp_message(chat_id, response_text, reply_to=original_message_id_session)
+            self._save_conversation_history(chat_id, response_text, True)
+            return
+
+        # Handle single item case where user might say "sim" or "1"
+        if len(reminders_options) == 1 and user_input_normalized in ["sim", "1", "s"]:
+            reminder_to_cancel = reminders_options[0]
+            if self._deactivate_reminder_in_db(reminder_to_cancel["id"]):
+                response_text = f"Lembrete '{reminder_to_cancel['text_summary']}' foi cancelado."
+            else:
+                response_text = f"Não foi possível cancelar o lembrete '{reminder_to_cancel['text_summary']}'. Tente novamente."
+            del self.pending_cancellation_sessions[chat_id]
+            self.send_whatsapp_message(chat_id, response_text, reply_to=original_message_id_session)
+            self._save_conversation_history(chat_id, response_text, True)
+            return
+
+        try:
+            choice_index = int(user_input_normalized) - 1 # User input is 1-based
+            if 0 <= choice_index < len(reminders_options):
+                reminder_to_cancel = reminders_options[choice_index]
+                if self._deactivate_reminder_in_db(reminder_to_cancel["id"]):
+                    response_text = f"Lembrete '{reminder_to_cancel['text_summary']}' foi cancelado."
+                else:
+                    response_text = f"Não foi possível cancelar o lembrete '{reminder_to_cancel['text_summary']}'. Tente novamente."
+                del self.pending_cancellation_sessions[chat_id]
+                self.send_whatsapp_message(chat_id, response_text, reply_to=original_message_id_session)
+                self._save_conversation_history(chat_id, response_text, True)
+            else:
+                response_text = "Opção inválida. Por favor, digite o número de um lembrete da lista, 'todos' (para os listados) ou 'nenhum'."
+                self.send_whatsapp_message(chat_id, response_text, reply_to=message_id) # Reply to current message for correction
+                self._save_conversation_history(chat_id, response_text, True)
+        except ValueError: # Not a number (and not "todos", "sim", "nao", etc.)
+            response_text = "Não entendi sua escolha. Por favor, digite o número de um lembrete da lista, 'todos' (para os listados) ou 'nenhum'."
+            self.send_whatsapp_message(chat_id, response_text, reply_to=message_id) # Reply to current message for correction
+            self._save_conversation_history(chat_id, response_text, True)
+
+
+    def _initiate_reminder_cancellation(self, chat_id: str, text: str, message_id: str):
+        """Handles the initial request to cancel reminders."""
+        logger.info(f"Iniciando cancelamento de lembrete para {chat_id} com texto: '{text}'")
+
+        if chat_id in self.pending_cancellation_sessions: # Clear any old session
+            del self.pending_cancellation_sessions[chat_id]
+
+        normalized_text = normalizar_texto(text)
+
+        # Check if user explicitly wants to cancel ALL reminders
+        if re.search(r'\btodos\b', normalized_text, re.IGNORECASE):
+            all_active_reminders = self._get_active_reminders(chat_id, limit=None) # Fetch all
+            if not all_active_reminders:
+                response_text = "Você não possui lembretes ativos para cancelar."
+                self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
+                self._save_conversation_history(chat_id, response_text, True)
+                return
+
+            cancelled_count = 0
+            for reminder in all_active_reminders:
+                if self._deactivate_reminder_in_db(reminder["id"]):
+                    cancelled_count += 1
+            
+            if cancelled_count > 0:
+                response_text = f"{cancelled_count} lembrete(s) foram cancelados com sucesso."
+            else:
+                response_text = "Não encontrei lembretes ativos ou não foi possível cancelá-los. Tente novamente."
+            self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
+            self._save_conversation_history(chat_id, response_text, True)
+            return
+
+        active_reminders_for_listing = self._get_active_reminders(chat_id, limit=10)
+
+        if not active_reminders_for_listing:
+            response_text = "Você não possui lembretes ativos para cancelar."
+            self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
+            self._save_conversation_history(chat_id, response_text, True)
+            return
+
+        options_for_session = []
+        response_parts = ["Você tem os seguintes lembretes ativos. Qual você gostaria de cancelar?"]
+        
+        for i, reminder in enumerate(active_reminders_for_listing):
+            dt_utc = reminder["reminder_time_utc"]
+            if isinstance(dt_utc, int) or isinstance(dt_utc, float): # Handle Firestore Timestamp as seconds
+                 dt_utc = datetime.fromtimestamp(dt_utc, tz=timezone.utc)
+            elif dt_utc.tzinfo is None: # Ensure dt_utc is timezone-aware
+                dt_utc = timezone.utc.localize(dt_utc)
+            
+            dt_local = dt_utc.astimezone(self.target_timezone)
+            
+            formatted_time = dt_local.strftime('%d/%m/%Y às %H:%M')
+            content_summary = reminder.get('content', 'Lembrete sem descrição')
+            if len(content_summary) > 50:
+                content_summary = content_summary[:47] + "..."
+            
+            summary = f"'{content_summary}' para {formatted_time}"
+            response_parts.append(f"{i+1}. {summary}")
+            options_for_session.append({"id": reminder["id"], "text_summary": summary})
+        
+        if len(active_reminders_for_listing) == 1:
+             response_parts = [f"Você tem um lembrete ativo:\n1. {options_for_session[0]['text_summary']}\n"]
+             response_parts.append("Digite '1' ou 'sim' para cancelá-lo, ou 'não'/'cancelar' para manter.")
+        else:
+            response_parts.append("\nDigite o número do lembrete para cancelar, 'todos' para cancelar os listados, ou 'nenhum'/'cancelar'.")
+        
+        response_text = "\n".join(response_parts)
+
+        self.pending_cancellation_sessions[chat_id] = {
+            "state": self.REMINDER_STATE_AWAITING_CANCELLATION_CHOICE,
+            "reminders_options": options_for_session,
+            "original_message_id": message_id,
+            "last_interaction": datetime.now(timezone.utc)
+        }
+        self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
+        self._save_conversation_history(chat_id, response_text, True)
+
+    def _is_cancel_reminder_request(self, text: str) -> bool:
+        """Checks if the text contains keywords indicating a reminder cancellation request."""
+        if not text:
+            return False
+        # Normalize text for more reliable regex matching of keywords like "todos"
+        normalized_text = normalizar_texto(text)
+        return bool(re.search(self.REMINDER_CANCEL_KEYWORDS_REGEX, normalized_text, re.IGNORECASE))
+
     # --- Methods for Reminder Feature ---
     def _is_reminder_request(self, text: str) -> bool:
         """Checks if the text contains keywords indicating a reminder request."""
