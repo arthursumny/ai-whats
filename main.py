@@ -1034,6 +1034,7 @@ class WhatsAppGeminiBot:
                         # Tentar inferir mimetype da URL como último recurso (pouco confiável)
                         # Idealmente, Whapi sempre envia mimetype.
                         try:
+                            logger.info(f"Attempting to infer mimetype from URL: {media_url}")
                             file_ext = os.path.splitext(media_url.split('?')[0])[1].lower() # Remove query params
                             if file_ext == ".jpg" or file_ext == ".jpeg": mimetype = "image/jpeg"
                             elif file_ext == ".png": mimetype = "image/png"
@@ -1074,9 +1075,7 @@ class WhatsAppGeminiBot:
                         if msg_type == 'audio' or msg_type == 'voice':
                             prompt_for_media = "Transcreva este audio, exatamente como está."
                         elif msg_type == 'document':
-                            prompt_for_media = "Resuma o conteúdo deste documento de forma clara e objetiva."
-                        elif msg_type == 'video':
-                            prompt_for_media = "Resuma o conteúdo deste vídeo de forma clara e objetiva."
+                            prompt_for_media = "Descreva este arquivo pdf de forma concisa e objetiva. Anote todas as informações relevantes."
                         
                         # Gerar descrição/transcrição
                         media_desc_response = self.client.models.generate_content(
