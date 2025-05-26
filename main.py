@@ -1024,6 +1024,7 @@ class WhatsAppGeminiBot:
                 content = msg_data['content'] # Texto ou media_url
                 original_caption = msg_data.get('original_caption')
                 mimetype = msg_data.get('mimetype')
+                logger.info(f"Processing message of type: {msg_type}, content: {content}, mimetype: {mimetype}")
 
                 if msg_type == 'text':
                     if content and content.strip():
@@ -1042,7 +1043,7 @@ class WhatsAppGeminiBot:
                             elif file_ext == ".oga": mimetype = "audio/ogg" # Comum para PTT
                             elif file_ext == ".opus": mimetype = "audio/opus"
                             elif file_ext == ".wav": mimetype = "audio/wav"
-                            elif file_ext == ".mp4": mimetype = "video/mp4"
+                            elif file_ext == ".mp4" or file_ext == "mp4": mimetype = "video/mp4"
                             elif file_ext == ".pdf": mimetype = "application/pdf"
                             else: logger.warning(f"Mimetype não fornecido e não pôde ser inferido da URL: {media_url}")
                         except Exception:
