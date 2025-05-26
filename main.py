@@ -1073,6 +1073,10 @@ class WhatsAppGeminiBot:
                         prompt_for_media = "Descreva este arquivo de forma concisa e objetiva."
                         if msg_type == 'audio' or msg_type == 'voice':
                             prompt_for_media = "Transcreva este audio, exatamente como está."
+                        elif msg_type == 'document':
+                            prompt_for_media = "Resuma o conteúdo deste documento de forma clara e objetiva."
+                        elif msg_type == 'video':
+                            prompt_for_media = "Resuma o conteúdo deste vídeo de forma clara e objetiva."
                         
                         # Gerar descrição/transcrição
                         media_desc_response = self.client.models.generate_content(
@@ -1090,6 +1094,12 @@ class WhatsAppGeminiBot:
                             entry += f": [Conteúdo processado da mídia: {media_description}]."
                         elif msg_type == 'voice':
                             entry = media_description
+                        elif msg_type == 'video':
+                            entry = f"Usuário enviou um(a) {msg_type}"
+                            entry += f": [Conteúdo processado da mídia: {media_description}]."
+                        elif msg_type == 'document':
+                            entry = f"Usuário enviou um(a) {msg_type}"
+                            entry += f": [Conteúdo processado da mídia: {media_description}]."
                         processed_texts_for_gemini.append(entry)
 
                     except requests.exceptions.RequestException as e_req:
