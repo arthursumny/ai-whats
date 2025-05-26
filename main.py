@@ -489,16 +489,27 @@ class WhatsAppGeminiBot:
 
         # Handle "hoje", "amanhã", "depois de amanha" by replacing with parsable dates
         now_in_target_tz = datetime.now(self.target_timezone)
-        processed_text = re.sub(r'\bhoje\b', now_in_target_tz.strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
-        processed_text = re.sub(r'\bamanhã\b', (now_in_target_tz + timedelta(days=1)).strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
-        processed_text = re.sub(r'\bdepois de amanhã\b', (now_in_target_tz + timedelta(days=2)).strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
+        today_date = now_in_target_tz.strftime('%Y-%m-%d')
+        tomorrow_date = (now_in_target_tz + timedelta(days=1)).strftime('%Y-%m-%d')
+        after_tomorrow_date = (now_in_target_tz + timedelta(days=2)).strftime('%Y-%m-%d')
 
-        # Convert "HH e MM" to "HH:MM" format
+        # Add timezone info to the date replacements
+        processed_text = re.sub(r'\bhoje\b', f"{today_date} {self.target_timezone.zone}", processed_text, flags=re.IGNORECASE)
+        processed_text = re.sub(r'\bamanhã\b', f"{tomorrow_date} {self.target_timezone.zone}", processed_text, flags=re.IGNORECASE)
+        processed_text = re.sub(r'\bdepois de amanhã\b', f"{after_tomorrow_date} {self.target_timezone.zone}", processed_text, flags=re.IGNORECASE)
+
+        # Convert various time formats to standard format
+        # "HH e MM" -> "HH:MM"
         processed_text = re.sub(r'(\d{1,2})\s*e\s*(\d{1,2})', r'\1:\2', processed_text)
+        # "as HH" -> "às HH:00"
+        processed_text = re.sub(r'\b(?:as|às)\s+(\d{1,2})(?!\d|:)\b', r'\1:00', processed_text, flags=re.IGNORECASE)
+        # Add seconds if not present
+        processed_text = re.sub(r'(\d{1,2}:\d{2})(?!:\d{2})', r'\1:00', processed_text)
 
         # "próxima segunda" -> "next monday"
         processed_text = re.sub(r'próxima\s+', 'next ', processed_text, flags=re.IGNORECASE)
         processed_text = re.sub(r'próximo\s+', 'next ', processed_text, flags=re.IGNORECASE)
+
         return processed_text
 
     def _extract_reminder_details_from_text(self, text: str, chat_id: str) -> Dict[str, Any]:
@@ -551,28 +562,42 @@ class WhatsAppGeminiBot:
         # 3. Parse DateTime
         cleaned_for_datetime = self._clean_text_for_parsing(text_to_parse)
         try:
+            # Get current time in target timezone for reference
+            now_local = datetime.now(self.target_timezone)
+
+            # Parse with fuzzy to get both datetime and non-datetime parts
             parsed_dt_naive, non_datetime_tokens = dateutil_parser.parse(
                 cleaned_for_datetime,
                 fuzzy_with_tokens=True,
-                dayfirst=True
+                dayfirst=True,
+                default=now_local.replace(hour=0, minute=0, second=0, microsecond=0)  # Default to start of current day
             )
 
-            # Localize to target timezone
+            # Check if only time was provided (date was default)
+            only_time_provided = all(
+                token.strip().lower() not in cleaned_for_datetime.lower()
+                for token in ['today', 'tomorrow', 'next', 'monday', 'tuesday', 'wednesday',
+                            'thursday', 'friday', 'saturday', 'sunday']
+            ) and not any(
+                re.search(r'\d{1,2}[-/]\d{1,2}', token)
+                for token in non_datetime_tokens
+            )
+
+            # Localize the parsed datetime
             if parsed_dt_naive.tzinfo is None:
-                localized_dt = self.target_timezone.localize(parsed_dt_naive, is_dst=None)
+                parsed_dt = self.target_timezone.localize(parsed_dt_naive, is_dst=None)
             else:
-                localized_dt = parsed_dt_naive.astimezone(self.target_timezone)
+                parsed_dt = parsed_dt_naive.astimezone(self.target_timezone)
 
-            # Check if time is in past
-            now_local = datetime.now(self.target_timezone)
-            date_was_implicit = (localized_dt.date() == now_local.date())
+            # If only time was provided and it's before current time
+            if only_time_provided and parsed_dt.time() < now_local.time():
+                # Add one day to the parsed time
+                parsed_dt = parsed_dt + timedelta(days=1)
+                logger.info(f"Only time was provided and it was past current time. Adjusted to next day: {parsed_dt}")
 
-            if date_was_implicit and localized_dt < now_local:
-                logger.info(f"Adjusting past time {localized_dt.strftime('%H:%M:%S')} to next day")
-                localized_dt += timedelta(days=1)
-
-            details["datetime_obj"] = localized_dt.astimezone(timezone.utc)
-            logger.debug(f"Parsed datetime (UTC): {details['datetime_obj']}")
+            # Convert to UTC for storage
+            details["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
+            logger.debug(f"Final parsed datetime (UTC): {details['datetime_obj']}")
 
             # Extract content from non-datetime parts
             content_parts = [token.strip() for token in non_datetime_tokens if token.strip()]
@@ -657,15 +682,11 @@ class WhatsAppGeminiBot:
     def _handle_pending_reminder_interaction(self, chat_id: str, text: str, message_id: str):
         """Handles user's response when the bot is waiting for more reminder info."""
         if chat_id not in self.pending_reminder_sessions:
-            # Should not happen if called correctly
             logger.warning(f"No pending reminder session for {chat_id} in _handle_pending_reminder_interaction")
-            # Fallback to standard processing if something went wrong
-            # self.process_whatsapp_message(message) # This would cause a loop.
-            # Instead, just log and maybe send a generic error or ignore.
             return
 
         session = self.pending_reminder_sessions[chat_id]
-        session["last_interaction"] = datetime.now(timezone.utc) # Update interaction time
+        session["last_interaction"] = datetime.now(timezone.utc)
 
         if text.lower().strip() in ["cancelar", "cancela"]:
             del self.pending_reminder_sessions[chat_id]
@@ -675,48 +696,65 @@ class WhatsAppGeminiBot:
             return
 
         current_state = session["state"]
-        
+
         if current_state == self.REMINDER_STATE_AWAITING_CONTENT:
             if text.strip():
                 session["content"] = text.strip()
-                session["state"] = "" # Mark as filled
-            else: # Empty content
+                session["state"] = ""
+            else:
                 self.send_whatsapp_message(chat_id, "O conteúdo do lembrete não pode ser vazio. Por favor, me diga o que devo lembrar.", reply_to=message_id)
                 self._save_conversation_history(chat_id, "O conteúdo do lembrete não pode ser vazio. Por favor, me diga o que devo lembrar.", True)
                 return
 
-
         elif current_state == self.REMINDER_STATE_AWAITING_DATETIME:
             try:
-                cleaned_text = self._clean_text_for_parsing(text)
-                # Corrigido: fuzzy_with_tokens=False retorna diretamente o datetime, não uma tupla.
-                parsed_dt_naive = dateutil_parser.parse(cleaned_text, fuzzy_with_tokens=False, dayfirst=True)
-                
-                if parsed_dt_naive.tzinfo is None:
-                    localized_dt = self.target_timezone.localize(parsed_dt_naive, is_dst=None)
-                else:
-                    localized_dt = parsed_dt_naive.astimezone(self.target_timezone)
-                
                 now_local = datetime.now(self.target_timezone)
-                # A data é considerada implícita se o usuário forneceu apenas a hora,
-                # o que resultaria em parsed_dt_naive tendo a data de hoje.
-                date_was_likely_implicit = (localized_dt.date() == now_local.date())
+                cleaned_text = self._clean_text_for_parsing(text)
 
-                if date_was_likely_implicit and localized_dt < now_local:
-                    logger.info(f"Horário local (interativo) parseado ({localized_dt.strftime('%H:%M:%S %Z')}) é anterior ao atual ({now_local.strftime('%H:%M:%S %Z')}) e data era implícita. Ajustando para o dia seguinte.")
-                    localized_dt += timedelta(days=1)
-                
-                session["datetime_obj"] = localized_dt.astimezone(timezone.utc)
-                session["state"] = "" 
+                # Parse with default to start of current day
+                parsed_dt_naive = dateutil_parser.parse(
+                    cleaned_text,
+                    fuzzy=True,
+                    dayfirst=True,
+                    default=now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+                )
+
+                # Check if only time was provided
+                only_time_provided = all(
+                    token.strip().lower() not in cleaned_text.lower()
+                    for token in ['hoje', 'amanha', 'amanhã', 'proximo', 'próximo', 'segunda', 'terça', 'quarta',
+                                'quinta', 'sexta', 'sabado', 'sábado', 'domingo']
+                ) and not re.search(r'\d{1,2}[-/]\d{1,2}', cleaned_text)
+
+                # Localize the parsed datetime
+                if parsed_dt_naive.tzinfo is None:
+                    parsed_dt = self.target_timezone.localize(parsed_dt_naive, is_dst=None)
+                else:
+                    parsed_dt = parsed_dt_naive.astimezone(self.target_timezone)
+
+                # If only time was provided and it's before current time
+                if only_time_provided and parsed_dt.time() < now_local.time():
+                    parsed_dt = parsed_dt + timedelta(days=1)
+                    logger.info(f"Only time was provided and it was past current time. Adjusted to next day: {parsed_dt}")
+
+                session["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
+                session["state"] = ""
+
             except (ValueError, TypeError) as e:
                 logger.info(f"Could not parse datetime from user input '{text}': {e}")
-                response_text = "Não consegui entender a data/hora. Por favor, tente de novo (ex: amanhã às 14:30, 25/12 09:00, hoje 18h)."
+                response_text = (
+                    "Não consegui entender a data/hora. Por favor, tente de novo usando um dos formatos:\n"
+                    "- hoje às 14:30\n"
+                    "- amanhã 09:00\n"
+                    "- 25/12 18:00\n"
+                    "- próxima segunda 10:00"
+                )
                 self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
                 self._save_conversation_history(chat_id, response_text, True)
                 return
-            except Exception as e_general: # Captura outras exceções inesperadas durante o parse
-                logger.error(f"Erro inesperado ao parsear data/hora '{text}' em _handle_pending_reminder_interaction: {e_general}", exc_info=True)
-                response_text = "Ocorreu um erro ao processar a data/hora. Por favor, tente de novo (ex: hoje 18h)."
+            except Exception as e_general:
+                logger.error(f"Erro inesperado ao parsear data/hora '{text}': {e_general}", exc_info=True)
+                response_text = "Ocorreu um erro ao processar a data/hora. Por favor, tente novamente."
                 self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
                 self._save_conversation_history(chat_id, response_text, True)
                 return
