@@ -1028,7 +1028,7 @@ class WhatsAppGeminiBot:
                 if msg_type == 'text':
                     if content and content.strip():
                         processed_texts_for_gemini.append(content.strip())
-                elif msg_type in ['audio', 'image', 'voice']:
+                elif msg_type in ['audio', 'image', 'voice', 'video', 'document']:
                     media_url = content
                     if not mimetype:
                         # Tentar inferir mimetype da URL como último recurso (pouco confiável)
@@ -1041,6 +1041,8 @@ class WhatsAppGeminiBot:
                             elif file_ext == ".oga": mimetype = "audio/ogg" # Comum para PTT
                             elif file_ext == ".opus": mimetype = "audio/opus"
                             elif file_ext == ".wav": mimetype = "audio/wav"
+                            elif file_ext == ".mp4": mimetype = "video/mp4"
+                            elif file_ext == ".pdf": mimetype = "application/pdf"
                             else: logger.warning(f"Mimetype não fornecido e não pôde ser inferido da URL: {media_url}")
                         except Exception:
                             logger.warning(f"Falha ao tentar inferir mimetype da URL: {media_url}")
