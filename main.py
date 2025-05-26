@@ -115,6 +115,19 @@ class WhatsAppGeminiBot:
     (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
 )
 """
+
+    REMINDER_CANCEL_KEYWORDS_REGEX = r"""(?ix)
+    (?:cancelar|cancela|excluir|exclui|remover|remove)\s+
+    (?:o\s+|meu\s+|um\s+)?
+    (?:lembrete|agendamento)
+    (?:\s+de\s+.*|\s+com\s+id\s+\w+)? # Optional: "lembrete de tomar agua" or "lembrete com id X"
+    |
+    (?:cancelar|cancela|excluir|exclui|remover|remove)\s+
+    todos\s+(?:os\s+)?(?:meus\s+)?lembretes
+    """
+
+    REMINDER_STATE_AWAITING_CANCELLATION_CHOICE = "awaiting_cancellation_choice"
+    REMINDER_CANCELLATION_SESSION_TIMEOUT_SECONDS = 300
     REMINDER_STATE_AWAITING_CONTENT = "awaiting_content"
     REMINDER_STATE_AWAITING_DATETIME = "awaiting_datetime"
     REMINDER_STATE_AWAITING_RECURRENCE = "awaiting_recurrence"
@@ -152,12 +165,13 @@ class WhatsAppGeminiBot:
         self.db = firestore.Client(project="voola-ai") # Seu projeto
         self.pending_timeout = 15  # Timeout para mensagens pendentes (em segundos)
         self.target_timezone = pytz.timezone(self.TARGET_TIMEZONE_NAME) # Objeto pytz timezone
-        
+
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
-        
+
         self.setup_apis()
         self.pending_reminder_sessions: Dict[str, Dict[str, Any]] = {}
+        self.pending_cancellation_sessions: Dict[str, Dict[str, Any]] = {}
         self.pending_cancellation_sessions: Dict[str, Dict[str, Any]] = {}
 
     def _get_pending_messages(self, chat_id: str) -> Dict[str, Any]:
@@ -978,6 +992,17 @@ class WhatsAppGeminiBot:
         for chat_id in stale_reminder_sessions:
             logger.info(f"Removendo sessão de criação de lembrete expirada para o chat {chat_id}.")
             del self.pending_reminder_sessions[chat_id]
+
+        # Clean cancellation sessions
+        stale_cancellation_sessions = []
+        for chat_id, session_data in self.pending_cancellation_sessions.items():
+            last_interaction = session_data.get("last_interaction")
+            if last_interaction and (now - last_interaction).total_seconds() > self.REMINDER_CANCELLATION_SESSION_TIMEOUT_SECONDS:
+                stale_cancellation_sessions.append(chat_id)
+
+        for chat_id in stale_cancellation_sessions:
+            logger.info(f"Removendo sessão de cancelamento de lembrete expirada para o chat {chat_id}.")
+            del self.pending_cancellation_sessions[chat_id]
 
         # Clean cancellation sessions
         stale_cancellation_sessions = []
