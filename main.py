@@ -471,7 +471,7 @@ class WhatsAppGeminiBot:
             'link': media_url
         }
 
-        self._save_pending_message(chat_id, pending_payload)
+        self._save_pending_message(chat_id, pending_payload, from_name) # Passar from_name aqui
         logger.info(f"Mensagem de {from_name} ({chat_id}) adicionada à fila pendente. Tipo: {processed_type_internal}.")
 
     # --- Methods for Reminder Feature ---
