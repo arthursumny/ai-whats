@@ -155,7 +155,7 @@ class WhatsAppGeminiBot:
             return doc.to_dict()
         return {}
     
-    def _save_pending_message(self, chat_id: str, message_payload: Dict[str, Any]):
+    def _save_pending_message(self, chat_id: str, message_payload: Dict[str, Any], from_name: str):
         """
         Armazena mensagem temporariamente com timestamp.
         message_payload deve conter: type, content, original_caption, mimetype, timestamp, message_id
@@ -163,7 +163,7 @@ class WhatsAppGeminiBot:
         doc_ref = self.db.collection("pending_messages").document(chat_id)
         # Usar transação para garantir consistência ao adicionar mensagens
         @firestore.transactional
-        def update_in_transaction(transaction, doc_ref, new_message):
+        def update_in_transaction(transaction, doc_ref, new_message, user_from_name):
             snapshot = doc_ref.get(transaction=transaction)
             existing_data = snapshot.to_dict() if snapshot.exists else {}
             
@@ -173,11 +173,11 @@ class WhatsAppGeminiBot:
             transaction.set(doc_ref, {
                 'messages': messages,
                 'last_update': datetime.now(timezone.utc), # Sempre atualiza o timestamp do documento
-                'processing': existing_data.get('processing', False) 
+                'processing': existing_data.get('processing', False),
+                'from_name': user_from_name
             }, merge=True) # Merge para não sobrescrever 'processing' se já estiver lá
 
-        update_in_transaction(self.db.transaction(), doc_ref, message_payload)
-        logger.info(f"Mensagem pendente salva para {chat_id}: {message_payload.get('type')}")
+        update_in_transaction(self.db.transaction(), doc_ref, message_payload, from_name)
 
 
     def _delete_pending_messages(self, chat_id: str):
@@ -298,9 +298,11 @@ class WhatsAppGeminiBot:
         except Exception as e:
             logger.error(f"Erro ao atualizar contexto: {e}")
 
-    def build_context_prompt(self, chat_id: str, current_prompt_text: str, current_message_timestamp: datetime) -> str:
+    def build_context_prompt(self, chat_id: str, current_prompt_text: str, current_message_timestamp: datetime, from_name: Optional[str] = None) -> str:
         """Constrói o prompt com histórico formatado corretamente, incluindo o resumo."""
         try:
+            user_display_name = from_name if from_name else "Usuário"
+
             summary_ref = self.db.collection("conversation_summaries").document(chat_id)
             summary_doc = summary_ref.get()
             summary = summary_doc.get("summary") if summary_doc.exists else ""
@@ -310,12 +312,12 @@ class WhatsAppGeminiBot:
             current_timestamp_iso = current_message_timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')
 
             if not history and not summary:
-                return f"Usuário: {current_prompt_text}" # Adiciona prefixo Usuário
+                return f"{user_display_name}: {current_prompt_text}" # Adiciona prefixo Usuário
 
             # Ordenar cronologicamente já é feito por _get_conversation_history
             context_parts = []
             for msg in history:
-                role = "Usuário" if not msg.get('is_bot', False) else "Assistente"
+                role = user_display_name if not msg.get('is_bot', False) else "Assistente"
                 msg_timestamp_iso = "data desconhecida"
                 if msg.get('timestamp'): # msg['timestamp'] é um Unix timestamp (float)
                     # Converte Unix timestamp (float, assumido UTC) para objeto datetime UTC
@@ -333,20 +335,20 @@ class WhatsAppGeminiBot:
             
             final_prompt.append(
                 "### Nova interação, responda a esta nova interação. ###\n"
-                f"A mensagem atual do usuário foi recebida em {current_timestamp_iso} (UTC).\n"
+                f"A mensagem atual de {user_display_name} foi recebida em {current_timestamp_iso} (UTC).\n"
                 "Considere os timestamps das mensagens do histórico e da mensagem atual. "
                 "Se uma mensagem do histórico for significativamente antiga em relação à mensagem atual, "
                 "avalie cuidadosamente se o tópico ainda é relevante e se faz sentido continuar ou referenciar essa conversa antiga. "
                 "Priorize a relevância para a interação atual. "
                 "Use o histórico e o resumo acima como contexto apenas se forem pertinentes para a nova interação."
             )
-            final_prompt.append(f"Usuário (em {current_timestamp_iso}): {current_prompt_text}")
+            final_prompt.append(f"{user_display_name} (em {current_timestamp_iso}): {current_prompt_text}")
             
             return "\n".join(final_prompt)
 
         except Exception as e:
             logger.error(f"Erro ao construir contexto para o chat {chat_id}: {e}")
-            return f"Usuário: {current_prompt_text}" # Fallback simples
+            return f"{user_display_name}: {current_prompt_text}" # Fallback simples
 
     def test_whapi_connection(self):
         try:
@@ -444,6 +446,7 @@ class WhatsAppGeminiBot:
                 content_to_store = media_url
             elif msg_type_whapi == 'video':
                 processed_type_internal = 'video'
+                content_to_store = media_url
             elif caption:
                 content_to_store = caption
                 logger.info(f"Mídia tipo {msg_type_whapi} com caption, tratando como texto '{caption}'. URL: {media_url}")
@@ -985,6 +988,7 @@ class WhatsAppGeminiBot:
 
             data = doc.to_dict()
             pending_msg_list = data.get('messages', [])
+            user_from_name = data.get('from_name', 'Usuário') # Fallback para 'Usuário'
 
             if not pending_msg_list:
                 logger.warning(f"Nenhuma mensagem pendente encontrada para {chat_id} ao processar.")
@@ -1295,14 +1299,12 @@ class WhatsAppGeminiBot:
         except Exception as e:
             logger.error(f"Erro ao gerar/enviar mensagem de reengajamento para {chat_id}: {e}", exc_info=True)
 
-    def generate_gemini_response(self, current_input_text: str, chat_id: str, current_message_timestamp: datetime) -> str:
+    def generate_gemini_response(self, current_input_text: str, chat_id: str, current_message_timestamp: datetime, from_name: Optional[str] = None) -> str:
         """Gera resposta do Gemini considerando o contexto completo e usando Google Search tool."""
         try:
             # current_input_text é o texto já processado (incluindo descrições de mídia)
-            full_prompt_with_history = self.build_context_prompt(chat_id, current_input_text, current_message_timestamp)
+            full_prompt_with_history = self.build_context_prompt(chat_id, current_input_text, current_message_timestamp, from_name) # Passar from_name
             
-            logger.info(f"Prompt final para Gemini (chat {chat_id})")
-
             google_search_tool = Tool(google_search=GoogleSearch())
 
             response = self.client.models.generate_content(
