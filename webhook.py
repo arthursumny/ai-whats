@@ -102,7 +102,7 @@ def handle_webhook():
                 text_check = (message_payload.get('text', {}).get('body') or 
                               message_payload.get('body') or 
                               message_payload.get('caption'))
-                if not text_check and msg_type not in ['image', 'audio', 'ptt', 'voice']: # Se não for mídia e não tiver texto
+                if not text_check and msg_type not in ['image', 'audio', 'ptt', 'voice', 'video', 'document']: # Se não for mídia e não tiver texto
                     app.logger.info(f"Webhook: Mensagem tipo '{msg_type}' sem conteúdo de texto claro, ignorando. ID: {message_payload.get('id')}")
                     continue
 

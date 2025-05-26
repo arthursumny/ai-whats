@@ -414,16 +414,16 @@ class WhatsAppGeminiBot:
             logger.info(f"Imagem recebida: {media_url}")
         elif msg_type_whapi in ['audio', 'ptt'] and 'audio' in message:
             media_url = message['audio'].get('link')
-            logger.info(f"Imagem recebida: {media_url}")
+            logger.info(f"audio recebido: {media_url}")
         elif msg_type_whapi == 'video' and 'video' in message:
             media_url = message['video'].get('link')
-            logger.info(f"Imagem recebida: {media_url}")
+            logger.info(f"video recebido: {media_url}")
         elif msg_type_whapi == 'document' and 'document' in message:
             media_url = message['document'].get('link')
-            logger.info(f"Imagem recebida: {media_url}")
+            logger.info(f"Documento recebido: {media_url}")
         elif msg_type_whapi == 'voice' and 'voice' in message:
             media_url = message['voice'].get('link')
-            logger.info(f"Imagem recebida: {media_url}")
+            logger.info(f"Voice recebida: {media_url}")
 
         # Decidir tipo processado internamente e conteúdo principal
         processed_type_internal = 'text'
@@ -439,6 +439,11 @@ class WhatsAppGeminiBot:
             elif msg_type_whapi == 'voice':
                 processed_type_internal = 'voice'
                 content_to_store = media_url
+            elif msg_type_whapi == 'document':
+                processed_type_internal = 'document'
+                content_to_store = media_url
+            elif msg_type_whapi == 'video':
+                processed_type_internal = 'video'
             elif caption:
                 content_to_store = caption
                 logger.info(f"Mídia tipo {msg_type_whapi} com caption, tratando como texto '{caption}'. URL: {media_url}")
