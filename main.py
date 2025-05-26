@@ -486,13 +486,16 @@ class WhatsAppGeminiBot:
         processed_text = text.lower()
         for pt_day, en_day in self.PORTUGUESE_DAYS_FOR_PARSING.items():
             processed_text = re.sub(r'\b' + pt_day + r'\b', en_day, processed_text)
-        
+
         # Handle "hoje", "amanhã", "depois de amanha" by replacing with parsable dates
-        now = datetime.now(timezone.utc)
-        processed_text = re.sub(r'\bhoje\b', now.strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
-        processed_text = re.sub(r'\bamanhã\b', (now + timedelta(days=1)).strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
-        processed_text = re.sub(r'\bdepois de amanhã\b', (now + timedelta(days=2)).strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
-        
+        now_in_target_tz = datetime.now(self.target_timezone)
+        processed_text = re.sub(r'\bhoje\b', now_in_target_tz.strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
+        processed_text = re.sub(r'\bamanhã\b', (now_in_target_tz + timedelta(days=1)).strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
+        processed_text = re.sub(r'\bdepois de amanhã\b', (now_in_target_tz + timedelta(days=2)).strftime('%Y-%m-%d'), processed_text, flags=re.IGNORECASE)
+
+        # Convert "HH e MM" to "HH:MM" format
+        processed_text = re.sub(r'(\d{1,2})\s*e\s*(\d{1,2})', r'\1:\2', processed_text)
+
         # "próxima segunda" -> "next monday"
         processed_text = re.sub(r'próxima\s+', 'next ', processed_text, flags=re.IGNORECASE)
         processed_text = re.sub(r'próximo\s+', 'next ', processed_text, flags=re.IGNORECASE)
