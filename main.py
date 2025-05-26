@@ -118,9 +118,21 @@ class WhatsAppGeminiBot:
     REMINDER_STATE_AWAITING_CONTENT = "awaiting_content"
     REMINDER_STATE_AWAITING_DATETIME = "awaiting_datetime"
     REMINDER_STATE_AWAITING_RECURRENCE = "awaiting_recurrence"
+    REMINDER_STATE_AWAITING_CANCELLATION_CHOICE = "awaiting_cancellation_choice"
     REMINDER_SESSION_TIMEOUT_SECONDS = 300  # 5 minutes for pending reminder session
+    REMINDER_CANCELLATION_SESSION_TIMEOUT_SECONDS = 300
     REMINDER_CHECK_INTERVAL_SECONDS = 60 # Check for due reminders every 60 seconds
     TARGET_TIMEZONE_NAME = 'America/Sao_Paulo'
+
+    REMINDER_CANCEL_KEYWORDS_REGEX = r"""(?ix)
+    (?:cancelar|cancela|excluir|exclui|remover|remove)\s+
+    (?:o\s+|meu\s+|um\s+)?
+    (?:lembrete|agendamento)
+    (?:\s+de\s+.*|\s+com\s+id\s+\w+)? # Optional: "lembrete de tomar agua" or "lembrete com id X"
+    |
+    (?:cancelar|cancela|excluir|exclui|remover|remove)\s+
+    todos\s+(?:os\s+)?(?:meus\s+)?lembretes
+"""
 
     PORTUGUESE_DAYS_FOR_PARSING = {
         "segunda": "monday", "terça": "tuesday", "quarta": "wednesday",
@@ -146,6 +158,7 @@ class WhatsAppGeminiBot:
         
         self.setup_apis()
         self.pending_reminder_sessions: Dict[str, Dict[str, Any]] = {}
+        self.pending_cancellation_sessions: Dict[str, Dict[str, Any]] = {}
 
     def _get_pending_messages(self, chat_id: str) -> Dict[str, Any]:
         """Obtém mensagens pendentes para um chat"""
@@ -397,11 +410,23 @@ class WhatsAppGeminiBot:
             self._handle_pending_reminder_interaction(chat_id, text_body, message_id)
             return # Reminder flow handles its own response
 
+        if chat_id in self.pending_cancellation_sessions:
+            self._save_message(message_id, chat_id, text_body, from_name, "text")
+            self._save_conversation_history(chat_id, text_body, False)
+            self._handle_pending_cancellation_interaction(chat_id, text_body, message_id)
+            return
+
         if self._is_reminder_request(text_body):
             self._save_message(message_id, chat_id, text_body, from_name, "text") # Log user's request
             self._save_conversation_history(chat_id, text_body, False)
             self._initiate_reminder_creation(chat_id, text_body, message_id)
             return # Reminder flow handles its own response
+
+        if self._is_cancel_reminder_request(text_body):
+            self._save_message(message_id, chat_id, text_body, from_name, "text")
+            self._save_conversation_history(chat_id, text_body, False)
+            self._initiate_reminder_cancellation(chat_id, text_body, message_id)
+            return
         # --- End Reminder Flow Logic ---
 
         # If not a reminder flow, proceed with standard message processing (Gemini, etc.)
@@ -940,19 +965,30 @@ class WhatsAppGeminiBot:
             logger.error(f"Erro ao verificar/enviar lembretes: {e}", exc_info=True)
 
     def _cleanup_stale_pending_reminder_sessions(self):
-        """Cleans up pending reminder sessions that have timed out."""
+        """Cleans up pending reminder and cancellation sessions that have timed out."""
         now = datetime.now(timezone.utc)
-        stale_sessions = []
+
+        # Clean reminder creation sessions
+        stale_reminder_sessions = []
         for chat_id, session_data in self.pending_reminder_sessions.items():
             last_interaction = session_data.get("last_interaction")
             if last_interaction and (now - last_interaction).total_seconds() > self.REMINDER_SESSION_TIMEOUT_SECONDS:
-                stale_sessions.append(chat_id)
-        
-        for chat_id in stale_sessions:
+                stale_reminder_sessions.append(chat_id)
+
+        for chat_id in stale_reminder_sessions:
             logger.info(f"Removendo sessão de criação de lembrete expirada para o chat {chat_id}.")
             del self.pending_reminder_sessions[chat_id]
-            # Optionally notify user that the reminder creation was cancelled due to timeout
-            # self.send_whatsapp_message(chat_id, "A criação do lembrete foi cancelada por inatividade.", None)
+
+        # Clean cancellation sessions
+        stale_cancellation_sessions = []
+        for chat_id, session_data in self.pending_cancellation_sessions.items():
+            last_interaction = session_data.get("last_interaction")
+            if last_interaction and (now - last_interaction).total_seconds() > self.REMINDER_CANCELLATION_SESSION_TIMEOUT_SECONDS:
+                stale_cancellation_sessions.append(chat_id)
+
+        for chat_id in stale_cancellation_sessions:
+            logger.info(f"Removendo sessão de cancelamento de lembrete expirada para o chat {chat_id}.")
+            del self.pending_cancellation_sessions[chat_id]
 
     def _check_pending_messages(self, chat_id: str):
         """Verifica se deve processar as mensagens acumuladas para um chat específico."""
@@ -1132,18 +1168,19 @@ class WhatsAppGeminiBot:
                         media_description = media_desc_response.text.strip()
                         
                         if msg_type == 'audio':
-                            entry = f"Usuário enviou um(a) {msg_type}"
+                            entry = f"{user_from_name} enviou um(a) {msg_type}"
                             entry += f": [Conteúdo processado da mídia: {media_description}], mantenha esse conteudo na resposta e envie entre *asteriscos*, abaixo disso um resumo também."
                         elif msg_type == 'image':
-                            entry = f"Usuário enviou um(a) {msg_type}"
+                            entry = f"{user_from_name} enviou um(a) {msg_type}"
                             entry += f": [Conteúdo processado da mídia: {media_description}]."
                         elif msg_type == 'voice':
-                            entry = media_description
+                            entry = f"{user_from_name} enviou um audio"
+                            entry += f": [Conteúdo processado da mídia: {media_description}], responda normalmente como se fosse uma mensagem de texto."
                         elif msg_type == 'video':
-                            entry = f"Usuário enviou um(a) {msg_type}"
+                            entry = f"{user_from_name} enviou um(a) {msg_type}"
                             entry += f": [Conteúdo processado da mídia: {media_description}]."
                         elif msg_type == 'document':
-                            entry = f"Usuário enviou um(a) {msg_type}"
+                            entry = f"{user_from_name} enviou um(a) {msg_type}"
                             entry += f": [Conteúdo processado da mídia: {media_description}]."
                         processed_texts_for_gemini.append(entry)
 
