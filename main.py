@@ -205,6 +205,53 @@ class WhatsAppGeminiBot:
         doc_ref = self.db.collection("processed_messages").document(message_id)
         return doc_ref.get().exists
 
+    def _deactivate_reminder_in_db(self, reminder_id: str) -> bool:
+        """Marks a specific reminder as inactive in Firestore and adds a cancelled_at timestamp."""
+        try:
+            reminder_ref = self.db.collection("reminders").document(reminder_id)
+            reminder_ref.update({
+                "is_active": False,
+                "cancelled_at": firestore.SERVER_TIMESTAMP
+            })
+            logger.info(f"Lembrete {reminder_id} marcado como inativo (cancelado).")
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao desativar lembrete {reminder_id}: {e}", exc_info=True)
+            return False
+    def _get_active_reminders(self, chat_id: str, limit: Optional[int] = 10) -> List[Dict[str, Any]]:
+        """Fetches active reminders for a user, ordered by time.
+           If limit is None, fetches all active reminders.
+        """
+        try:
+            query_base = (
+                self.db.collection("reminders")
+                .where(filter=FieldFilter("chat_id", "==", chat_id))
+                .where(filter=FieldFilter("is_active", "==", True))
+                .order_by("reminder_time_utc", direction=firestore.Query.ASCENDING)
+            )
+            if limit is not None:
+                query = query_base.limit(limit)
+            else:
+                query = query_base # No limit
+
+            docs = query.stream()
+            reminders = []
+            for doc in docs:
+                data = doc.to_dict()
+                data["id"] = doc.id 
+                # Ensure reminder_time_utc is a datetime object
+                if "reminder_time_utc" in data and isinstance(data["reminder_time_utc"], (int, float)):
+                    # Firestore Timestamps might be read as seconds since epoch if not handled by client lib sometimes
+                    data["reminder_time_utc"] = datetime.fromtimestamp(data["reminder_time_utc"], tz=timezone.utc)
+                elif "reminder_time_utc" in data and isinstance(data["reminder_time_utc"], datetime) and data["reminder_time_utc"].tzinfo is None:
+                    # Ensure it's timezone-aware (UTC)
+                    data["reminder_time_utc"] = data["reminder_time_utc"].replace(tzinfo=timezone.utc)
+                reminders.append(data)
+            return reminders
+        except Exception as e:
+            logger.error(f"Erro ao buscar lembretes ativos para {chat_id}: {e}", exc_info=True)
+            return []
+
     def _save_message(self, message_id: str, chat_id: str, text: str, from_name: str, msg_type: str = "text"):
         """Armazena a mensagem no Firestore"""
         doc_ref = self.db.collection("processed_messages").document(message_id)
@@ -1135,7 +1182,6 @@ class WhatsAppGeminiBot:
     def _cleanup_stale_pending_reminder_sessions(self):
         """Cleans up pending reminder and cancellation sessions that have timed out."""
         now = datetime.now(timezone.utc)
-
         # Clean reminder creation sessions
         stale_reminder_sessions = []
         for chat_id, session_data in self.pending_reminder_sessions.items():
