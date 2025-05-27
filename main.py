@@ -152,6 +152,18 @@ class WhatsAppGeminiBot:
         "segunda-feira": "monday", "terça-feira": "tuesday", "quarta-feira": "wednesday",
         "quinta-feira": "thursday", "sexta-feira": "friday"
     }
+
+    MONTHLY_DAY_SPECIFIC_REGEX = r"""(?ix)
+    \b(?:
+        (?:todo\s+dia|mensalmente\s+(?:no\s+)?dia|dia) # "todo dia 10", "mensalmente dia 10", "dia 10" (when context implies monthly)
+        \s+(\d{1,2})                                  # The day number (1-31)
+        (?:
+            \s+(?:de\s+cada\s+m[eê]s|por\s+m[eê]s)     # Optional "de cada mes", "por mes"
+        )?
+    |
+        (?:todo\s+m[eê]s|mensalmente)\s+dia\s+(\d{1,2}) # "todo mes dia 10"
+    )\b
+    """
     MONTHLY_DAY_SPECIFIC_REGEX = r"""(?ix)
     \b(?:
         (?:todo\s+dia|mensalmente\s+(?:no\s+)?dia|dia) # "todo dia 10", "mensalmente dia 10", "dia 10" (when context implies monthly)
@@ -748,10 +760,37 @@ class WhatsAppGeminiBot:
     def _clean_text_for_parsing(self, text: str) -> str:
         """Prepares text for date/time parsing by translating Portuguese day names."""
         processed_text = text.lower()
+
+        # Check for monthly day-specific pattern first
+        monthly_match = re.search(self.MONTHLY_DAY_SPECIFIC_REGEX, processed_text)
+        if monthly_match:
+            day_num = monthly_match.group(1) or monthly_match.group(2)  # One of the groups will match
+            if day_num and 1 <= int(day_num) <= 31:
+                # Get current date in target timezone
+                now_local = datetime.now(self.target_timezone)
+                target_day = int(day_num)
+
+                # Calculate next occurrence of this day
+                if target_day < now_local.day:
+                    # If target day has passed this month, move to next month
+                    next_date = (now_local.replace(day=1) + relativedelta(months=1)).replace(day=target_day)
+                else:
+                    # Try this month first
+                    try:
+                        next_date = now_local.replace(day=target_day)
+                    except ValueError:  # Invalid day for current month
+                        next_date = (now_local.replace(day=1) + relativedelta(months=1)).replace(day=target_day)
+
+                # Replace the matched text with the actual date
+                date_str = next_date.strftime('%Y-%m-%d')
+                processed_text = re.sub(monthly_match.group(0), date_str, processed_text)
+                logger.info(f"Monthly day-specific pattern found. Converted to date: {date_str}")
+
+        # Continue with regular day name translations
         for pt_day, en_day in self.PORTUGUESE_DAYS_FOR_PARSING.items():
             processed_text = re.sub(r'\b' + pt_day + r'\b', en_day, processed_text)
 
-        # Handle "hoje", "amanhã", "depois de amanha" by replacing with parsable dates
+        # Handle "hoje", "amanhã", "depois de amanha"
         now_in_target_tz = datetime.now(self.target_timezone)
         today_date = now_in_target_tz.strftime('%Y-%m-%d')
         tomorrow_date = (now_in_target_tz + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -779,6 +818,7 @@ class WhatsAppGeminiBot:
     def _extract_reminder_details_from_text(self, text: str, chat_id: str) -> Dict[str, Any]:
         """
         Extracts content, datetime, and recurrence from text with improved accuracy.
+        Handles monthly day-specific patterns correctly.
         """
         details = {
             "content": None,
@@ -807,39 +847,45 @@ class WhatsAppGeminiBot:
 
         text_to_parse = payload_text
 
-        # 2. Extract Recurrence (if any)
-        found_recurrence_phrase = ""
-        for phrase, key in self.RECURRENCE_KEYWORDS.items():
-            normalized_phrase = normalizar_texto(phrase)
-            normalized_text = normalizar_texto(text_to_parse)
-            match = re.search(r'\b' + re.escape(normalized_phrase) + r'\b', normalized_text, re.IGNORECASE)
-            if match:
-                # Find the original phrase in the original text
-                original_phrase_match = re.search(r'\b' + re.escape(phrase) + r'\b', text_to_parse, re.IGNORECASE)
-                if original_phrase_match and len(original_phrase_match.group(0)) > len(found_recurrence_phrase):
-                    found_recurrence_phrase = original_phrase_match.group(0)
-                    details["recurrence"] = key
-                    logger.debug(f"Found recurrence: {key} from phrase '{found_recurrence_phrase}'")
+        # 2. Check for monthly day-specific pattern first
+        monthly_match = re.search(self.MONTHLY_DAY_SPECIFIC_REGEX, text_to_parse)
+        if monthly_match:
+            day_num = monthly_match.group(1) or monthly_match.group(2)  # One of the groups will match
+            if day_num and 1 <= int(day_num) <= 31:
+                details["recurrence"] = "monthly"
+                details["day_of_month"] = int(day_num)
+                logger.info(f"Found monthly day-specific pattern. Day: {day_num}")
+                # Remove the matched pattern from text_to_parse
+                text_to_parse = re.sub(monthly_match.group(0), "", text_to_parse).strip()
+        else:
+            # 3. Extract other recurrence patterns if no monthly day-specific pattern
+            found_recurrence_phrase = ""
+            for phrase, key in self.RECURRENCE_KEYWORDS.items():
+                normalized_phrase = normalizar_texto(phrase)
+                normalized_text = normalizar_texto(text_to_parse)
+                match = re.search(r'\b' + re.escape(normalized_phrase) + r'\b', normalized_text, re.IGNORECASE)
+                if match:
+                    original_phrase_match = re.search(r'\b' + re.escape(phrase) + r'\b', text_to_parse, re.IGNORECASE)
+                    if original_phrase_match and len(original_phrase_match.group(0)) > len(found_recurrence_phrase):
+                        found_recurrence_phrase = original_phrase_match.group(0)
+                        details["recurrence"] = key
+                        logger.debug(f"Found recurrence: {key} from phrase '{found_recurrence_phrase}'")
 
-        if found_recurrence_phrase:
-            text_to_parse = text_to_parse.replace(found_recurrence_phrase, "").strip()
-            logger.debug(f"After removing recurrence: '{text_to_parse}'")
+            if found_recurrence_phrase:
+                text_to_parse = text_to_parse.replace(found_recurrence_phrase, "").strip()
+                logger.debug(f"After removing recurrence: '{text_to_parse}'")
 
-        # 3. Parse DateTime
+        # 4. Parse DateTime
         cleaned_for_datetime = self._clean_text_for_parsing(text_to_parse)
         try:
-            # Get current time in target timezone for reference
             now_local = datetime.now(self.target_timezone)
-
-            # Parse with fuzzy to get both datetime and non-datetime parts
             parsed_dt_naive, non_datetime_tokens = dateutil_parser.parse(
                 cleaned_for_datetime,
                 fuzzy_with_tokens=True,
                 dayfirst=True,
-                default=now_local.replace(hour=0, minute=0, second=0, microsecond=0)  # Default to start of current day
+                default=now_local.replace(hour=0, minute=0, second=0, microsecond=0)
             )
 
-            # Check if only time was provided (date was default)
             only_time_provided = all(
                 token.strip().lower() not in cleaned_for_datetime.lower()
                 for token in ['today', 'tomorrow', 'next', 'monday', 'tuesday', 'wednesday',
@@ -849,23 +895,45 @@ class WhatsAppGeminiBot:
                 for token in non_datetime_tokens
             )
 
-            # Localize the parsed datetime
             if parsed_dt_naive.tzinfo is None:
                 parsed_dt = self.target_timezone.localize(parsed_dt_naive, is_dst=None)
             else:
                 parsed_dt = parsed_dt_naive.astimezone(self.target_timezone)
 
-            # If only time was provided and it's before current time
-            if only_time_provided and parsed_dt.time() < now_local.time():
-                # Add one day to the parsed time
-                parsed_dt = parsed_dt + timedelta(days=1)
-                logger.info(f"Only time was provided and it was past current time. Adjusted to next day: {parsed_dt}")
+            if only_time_provided:
+                details["time_explicitly_provided"] = True
+                if parsed_dt.time() < now_local.time():
+                    parsed_dt = parsed_dt + timedelta(days=1)
+                    logger.info(f"Only time provided and was past current time. Adjusted to next day: {parsed_dt}")
 
-            # Convert to UTC for storage
+            # For monthly reminders with day_of_month, ensure correct date
+            if details["recurrence"] == "monthly" and details["day_of_month"]:
+                target_day = details["day_of_month"]
+                target_time = parsed_dt.time()
+
+                # Try to set the target day in current month first
+                try:
+                    target_date = now_local.replace(day=target_day)
+                except ValueError:  # Invalid day for current month
+                    # Move to next month and try again
+                    target_date = (now_local.replace(day=1) + relativedelta(months=1)).replace(day=target_day)
+
+                # If target date/time is in the past, move to next month
+                target_datetime = target_date.replace(
+                    hour=target_time.hour,
+                    minute=target_time.minute,
+                    second=0,
+                    microsecond=0
+                )
+
+                if target_datetime <= now_local:
+                    target_datetime = (target_datetime + relativedelta(months=1))
+
+                parsed_dt = target_datetime
+
             details["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
             logger.debug(f"Final parsed datetime (UTC): {details['datetime_obj']}")
 
-            # Extract content from non-datetime parts
             content_parts = [token.strip() for token in non_datetime_tokens if token.strip()]
             initial_content = " ".join(content_parts).strip()
             logger.debug(f"Initial content from non-datetime tokens: '{initial_content}'")
@@ -874,9 +942,8 @@ class WhatsAppGeminiBot:
             logger.info(f"DateTime parsing failed: {e}")
             initial_content = text_to_parse
 
-        # 4. Clean up content
+        # 5. Clean up content
         if initial_content:
-            # Clean trailing phrases
             content_words = initial_content.split()
             while content_words and any(
                 normalizar_texto(content_words[-1]) == word
@@ -886,11 +953,8 @@ class WhatsAppGeminiBot:
                 logger.debug(f"Removed trailing word, remaining: '{' '.join(content_words)}'")
 
             cleaned_content = " ".join(content_words).strip()
-
-            # Remove any surviving reminder keywords or common words
             cleaned_content = re.sub(self.REMINDER_REQUEST_KEYWORDS_REGEX, "", cleaned_content, flags=re.IGNORECASE).strip()
 
-            # Final validation
             if cleaned_content and not any(
                 normalizar_texto(cleaned_content) == word
                 for word in self.trailing_phrases_to_strip_normalized + self.leading_words_to_strip_normalized
