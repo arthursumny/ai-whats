@@ -16,6 +16,7 @@ from dateutil.relativedelta import relativedelta # Added for recurrence
 import unicodedata
 import pytz
 import random
+import calendar
 
 
 # Carrega variáveis do .env
@@ -120,6 +121,7 @@ class WhatsAppGeminiBot:
     REMINDER_STATE_AWAITING_CONTENT = "awaiting_content"
     REMINDER_STATE_AWAITING_DATETIME = "awaiting_datetime"
     REMINDER_STATE_AWAITING_RECURRENCE = "awaiting_recurrence" # Not actively used for asking, but for session state
+    REMINDER_STATE_AWAITING_TIME = "awaiting_time"  # New state for when only time is missing
     REMINDER_STATE_AWAITING_CANCELLATION_CHOICE = "awaiting_cancellation_choice" # For cancellation flow
     REMINDER_SESSION_TIMEOUT_SECONDS = 300  # 5 minutes for pending reminder creation session
     REMINDER_CANCELLATION_SESSION_TIMEOUT_SECONDS = 300 # 5 minutes for pending cancellation session
@@ -150,6 +152,18 @@ class WhatsAppGeminiBot:
         "segunda-feira": "monday", "terça-feira": "tuesday", "quarta-feira": "wednesday",
         "quinta-feira": "thursday", "sexta-feira": "friday"
     }
+    MONTHLY_DAY_SPECIFIC_REGEX = r"""(?ix)
+    \b(?:
+        (?:todo\s+dia|mensalmente\s+(?:no\s+)?dia|dia) # "todo dia 10", "mensalmente dia 10", "dia 10" (when context implies monthly)
+        \s+(\d{1,2})                                  # The day number (1-31)
+        (?:
+            \s+(?:de\s+cada\s+m[eê]s|por\s+m[eê]s)     # Optional "de cada mes", "por mes"
+        )?
+    |
+        (?:todo\s+m[eê]s|mensalmente)\s+dia\s+(\d{1,2}) # "todo mes dia 10"
+    )\b
+    """
+
     RECURRENCE_KEYWORDS = {
         "diariamente": "daily", "todo dia": "daily", "todos os dias": "daily",
         "semanalmente": "weekly", "toda semana": "weekly", "todas as semanas": "weekly",
@@ -770,6 +784,8 @@ class WhatsAppGeminiBot:
             "content": None,
             "datetime_obj": None,
             "recurrence": "none",
+            "day_of_month": None,  # For "monthly on day X"
+            "time_explicitly_provided": False,
             "original_datetime_str": None
         }
 
@@ -1111,22 +1127,26 @@ class WhatsAppGeminiBot:
             logger.error(f"Erro ao refinar conteúdo do lembrete com Gemini para {chat_id}: {e}", exc_info=True)
             return original_content
 
-    def _save_reminder_to_db(self, chat_id: str, content: str, reminder_time_utc: datetime, recurrence: str, original_message_id: str):
+    def _save_reminder_to_db(self, chat_id: str, content: str, reminder_time_utc: datetime, recurrence: str, original_message_id: str, day_of_month: Optional[int] = None):
         """Saves the complete reminder to Firestore."""
         try:
-            doc_ref = self.db.collection("reminders").document() # Auto-generate ID
-            doc_ref.set({
+            reminder_payload = {
                 "chat_id": chat_id,
                 "content": content,
-                "reminder_time_utc": reminder_time_utc, # Firestore will convert to its Timestamp type
-                "recurrence": recurrence, # "none", "daily", "weekly", "monthly", "yearly"
+                "reminder_time_utc": reminder_time_utc,
+                "recurrence": recurrence,
                 "is_active": True,
                 "created_at": firestore.SERVER_TIMESTAMP,
-                "last_sent_at": None, # For recurring reminders
+                "last_sent_at": None,
                 "original_message_id": original_message_id,
-                "original_hour_utc": reminder_time_utc.hour, # Store original time components for recurrence
+                "original_hour_utc": reminder_time_utc.hour,
                 "original_minute_utc": reminder_time_utc.minute,
-            })
+            }
+            if recurrence == "monthly" and day_of_month is not None:
+                reminder_payload["original_day_of_month"] = day_of_month
+
+            doc_ref = self.db.collection("reminders").document()
+            doc_ref.set(reminder_payload)
             logger.info(f"Lembrete salvo no Firestore para {chat_id}: {content} @ {reminder_time_utc}")
         except Exception as e:
             logger.error(f"Erro ao salvar lembrete para {chat_id} no Firestore: {e}", exc_info=True)
