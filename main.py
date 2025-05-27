@@ -15,6 +15,7 @@ from dateutil import parser as dateutil_parser # Added for reminder date parsing
 from dateutil.relativedelta import relativedelta # Added for recurrence
 import unicodedata
 import pytz
+import random
 
 
 # Carrega variáveis do .env
@@ -125,6 +126,14 @@ class WhatsAppGeminiBot:
     REMINDER_CHECK_INTERVAL_SECONDS = 60 # Check for due reminders every 60 seconds
     TARGET_TIMEZONE_NAME = 'America/Sao_Paulo'
 
+    REMINDER_CONFIRMATION_TEMPLATES = [
+        "Claro! Lembrete agendado para {datetime_str}:\n\n*{content}*",
+        "Entendido! Seu lembrete para {datetime_str} está configurado:\n\n*{content}*",
+        "Anotado! Te lembrarei em {datetime_str} sobre o seguinte:\n\n*{content}*",
+        "Perfeito! Lembrete definido para {datetime_str}:\n\n*{content}*",
+        "Confirmado! Agendei seu lembrete para {datetime_str}:\n\n*{content}*"
+    ]
+
     REMINDER_CANCEL_KEYWORDS_REGEX = r"""(?ix)
     (?:cancelar|cancela|excluir|exclui|remover|remove)\s+
     (?:o\s+|meu\s+|um\s+)?
@@ -218,7 +227,7 @@ class WhatsAppGeminiBot:
         except Exception as e:
             logger.error(f"Erro ao desativar lembrete {reminder_id}: {e}", exc_info=True)
             return False
-    def _get_active_reminders(self, chat_id: str, limit: Optional[int] = 10) -> List[Dict[str, Any]]:
+    def _get_active_reminders(self, chat_id: str, limit: Optional[int] = 50) -> List[Dict[str, Any]]:
         """Fetches active reminders for a user, ordered by time.
            If limit is None, fetches all active reminders.
         """
@@ -911,9 +920,18 @@ class WhatsAppGeminiBot:
             self._ask_for_missing_reminder_info(chat_id, session_data)
         else:
             # All details found
-            self._save_reminder_to_db(chat_id, content, datetime_obj_utc, recurrence, message_id)
+            refined_content = self._refine_reminder_content_with_gemini(content, chat_id)
+            if not refined_content:
+                logger.warning(f"Refinamento do conteúdo do lembrete '{content}' falhou ou retornou vazio. Usando conteúdo original.")
+                refined_content = content
+
+            self._save_reminder_to_db(chat_id, refined_content, datetime_obj_utc, recurrence, message_id)
+
             datetime_local = datetime_obj_utc.astimezone(self.target_timezone)
-            response_text = f"Claro! \n\nLembrete agendado para {datetime_local.strftime('%d/%m/%Y às %H:%M')}\n\n*{content}*"
+            datetime_local_str = datetime_local.strftime('%d/%m/%Y às %H:%M')
+
+            confirmation_template = random.choice(self.REMINDER_CONFIRMATION_TEMPLATES)
+            response_text = confirmation_template.format(datetime_str=datetime_local_str, content=refined_content)
             if recurrence != "none":
                 response_text += f" (Recorrência: {recurrence})"
             self.send_whatsapp_message(chat_id, response_text, reply_to=message_id)
@@ -1009,17 +1027,26 @@ class WhatsAppGeminiBot:
         if session["state"]: # Still something missing
             self._ask_for_missing_reminder_info(chat_id, session)
         else: # All info gathered
+            content_to_refine = session["content"]
+            refined_content = self._refine_reminder_content_with_gemini(content_to_refine, chat_id)
+            if not refined_content:
+                logger.warning(f"Refinamento do conteúdo do lembrete '{content_to_refine}' falhou ou retornou vazio. Usando conteúdo original.")
+                refined_content = content_to_refine
+
             self._save_reminder_to_db(
-                chat_id, 
-                session["content"], 
-                session["datetime_obj"], 
-                session.get("recurrence", "none"), 
+                chat_id,
+                refined_content,
+                session["datetime_obj"],
+                session.get("recurrence", "none"),
                 session["original_message_id"]
             )
+
             dt_obj_utc = session["datetime_obj"]
             dt_local = dt_obj_utc.astimezone(self.target_timezone)
-            response_text = f"Lembrete agendado para {dt_local.strftime('%d/%m/%Y às %H:%M')} ({self.target_timezone.zone}): {session['content']}"
-            
+            datetime_local_str = dt_local.strftime('%d/%m/%Y às %H:%M')
+
+            confirmation_template = random.choice(self.REMINDER_CONFIRMATION_TEMPLATES)
+            response_text = confirmation_template.format(datetime_str=datetime_local_str, content=refined_content)
             if session.get("recurrence", "none") != "none":
                 response_text += f" (Recorrência: {session['recurrence']})"
             
@@ -1045,6 +1072,44 @@ class WhatsAppGeminiBot:
         else:
             # This case should ideally not be reached if states are managed properly
             logger.error(f"Reached _ask_for_missing_reminder_info with no question to ask for state {state}, session: {session_data}")
+
+    def _refine_reminder_content_with_gemini(self, original_content: str, chat_id: str) -> str:
+        """Refines the reminder content using Gemini for clarity and conciseness."""
+        if not original_content or not original_content.strip():
+            logger.warning(f"Conteúdo original do lembrete está vazio para {chat_id}. Não refinando.")
+            return ""
+
+        prompt = (
+            "Transforme a seguinte frase em um lembrete conciso e acionável. Extraia a tarefa principal. "
+            "Por exemplo, de 'r la pelas horas que preciso separar umas roupas pra minha sogra?' extraia 'separar umas roupas para a sogra'. "
+            "De 'me lembra de comprar leite horas' extraia 'comprar leite'.\n\n"
+            f"Frase original: '{original_content}'\n\n"
+            "Lembrete conciso:"
+        )
+        try:
+            logger.info(f"Refinando conteúdo do lembrete para {chat_id} com Gemini. Original: '{original_content}'")
+            response = self.client.models.generate_content(
+                model=self.gemini_model_name,
+                contents=[prompt],
+                config=self.model_config
+            )
+
+            refined_text = ""
+            if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'text'):
+                        refined_text += part.text
+            refined_text = refined_text.strip()
+
+            if refined_text:
+                logger.info(f"Conteúdo do lembrete refinado: '{refined_text}'")
+                return refined_text
+            else:
+                logger.warning(f"Gemini retornou conteúdo refinado vazio para '{original_content}'. Usando original.")
+                return original_content
+        except Exception as e:
+            logger.error(f"Erro ao refinar conteúdo do lembrete com Gemini para {chat_id}: {e}", exc_info=True)
+            return original_content
 
     def _save_reminder_to_db(self, chat_id: str, content: str, reminder_time_utc: datetime, recurrence: str, original_message_id: str):
         """Saves the complete reminder to Firestore."""
