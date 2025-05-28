@@ -228,6 +228,80 @@ class WhatsAppGeminiBot:
 
         update_in_transaction(self.db.transaction(), doc_ref, message_payload, from_name)
 
+    def _detect_reminder_in_gemini_response(self, response_text: str) -> Dict[str, Any]:
+        """
+        Detecta se a resposta do Gemini indica que um lembrete deve ser criado.
+        Retorna detalhes extraídos se encontrado.
+        """
+        reminder_indicators = [
+            "vou te lembrar", "vou lembrar", "te lembrarei", "lembrarei você",
+            "lembrete agendado", "lembrete criado", "agendei um lembrete",
+            "anotei para te lembrar", "vou te avisar", "te aviso",
+            "agendado para", "marcado para", "definido para"
+        ]
+
+        normalized_response = normalizar_texto(response_text)
+
+        for indicator in reminder_indicators:
+            if normalizar_texto(indicator) in normalized_response:
+                logger.info(f"Indicador de lembrete detectado na resposta do Gemini: '{indicator}'")
+                # Extrair detalhes do lembrete da resposta
+                return self._extract_reminder_from_gemini_response(response_text)
+
+        return {"found": False}
+
+    def _extract_reminder_from_gemini_response(self, response_text: str) -> Dict[str, Any]:
+        """
+        Extrai detalhes do lembrete da resposta do Gemini.
+        """
+        details = {
+            "found": True,
+            "content": None,
+            "datetime_obj": None,
+            "recurrence": "none"
+        }
+
+        # Usar regex para encontrar padrões comuns de lembrete na resposta
+        # Exemplo: "Vou te lembrar de [conteúdo] em [data/hora]"
+
+        # Padrão para conteúdo entre aspas ou após "de"
+        content_patterns = [
+            r'"([^"]+)"',  # Conteúdo entre aspas
+            r'lembrar (?:de |para |que )?(.+?)(?:\s+(?:em|no|na|às|para|amanhã|hoje)|\.|\!|\?|$)',
+            r'sobre:?\s*(.+?)(?:\s+(?:em|no|na|às|para)|\.|\!|\?|$)'
+        ]
+
+        for pattern in content_patterns:
+            match = re.search(pattern, response_text, re.IGNORECASE)
+            if match:
+                details["content"] = match.group(1).strip()
+                break
+            
+        # Extrair data/hora
+        cleaned_text = self._clean_text_for_parsing(response_text)
+        try:
+            # Tentar extrair datetime da resposta
+            parsed_dt_naive, _ = dateutil_parser.parse(
+                cleaned_text,
+                fuzzy_with_tokens=True,
+                dayfirst=True,
+                default=datetime.now(self.target_timezone).replace(hour=9, minute=0, second=0)
+            )
+
+            # Garantir que está no timezone de São Paulo
+            if parsed_dt_naive.tzinfo is None:
+                parsed_dt = self.target_timezone.localize(parsed_dt_naive)
+            else:
+                parsed_dt = parsed_dt_naive.astimezone(self.target_timezone)
+
+            # Converter para UTC para salvar
+            details["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
+
+        except (ValueError, TypeError) as e:
+            logger.info(f"Não foi possível extrair data/hora da resposta do Gemini: {e}")
+
+        return details
+
 
     def _delete_pending_messages(self, chat_id: str):
         """Remove mensagens processadas"""
@@ -490,9 +564,9 @@ class WhatsAppGeminiBot:
 
         
         # --- Reminder and Cancellation Flow Logic ---
-        # Prioritize pending session interactions   
+        # Manter apenas as sessões pendentes e cancelamento
         if chat_id in self.pending_reminder_sessions:
-            self._save_message(message_id, chat_id, text_body, from_name, "text") # Log user's reply
+            self._save_message(message_id, chat_id, text_body, from_name, "text")
             self._save_conversation_history(chat_id, text_body, False)
             self._handle_pending_reminder_interaction(chat_id, text_body, message_id)
             return 
@@ -503,20 +577,18 @@ class WhatsAppGeminiBot:
             self._handle_pending_cancellation_interaction(chat_id, text_body, message_id)
             return 
 
-        # Verificar novas solicitações: Cancelamento primeiro, depois criação
-        if self._is_cancel_reminder_request(text_body): # Verificar cancelamento ANTES de criação
+        # Manter apenas cancelamento direto (não criação)
+        if self._is_cancel_reminder_request(text_body):
             logger.info(f"Requisição de cancelamento de lembrete detectada para '{text_body}'")
             self._save_message(message_id, chat_id, text_body, from_name, "text")
             self._save_conversation_history(chat_id, text_body, False)
             self._initiate_reminder_cancellation(chat_id, text_body, message_id)
             return 
 
-        if self._is_reminder_request(text_body):
-            logger.info(f"Requisição de criação de lembrete detectada para '{text_body}'")
-            self._save_message(message_id, chat_id, text_body, from_name, "text") 
-            self._save_conversation_history(chat_id, text_body, False)
-            self._initiate_reminder_creation(chat_id, text_body, message_id)
-            return 
+        # REMOVER a detecção de criação de lembrete aqui
+        # if self._is_reminder_request(text_body):
+        #     ...
+
         # --- End Reminder and Cancellation Flow Logic ---
 
         # If not a reminder flow, proceed with standard message processing (Gemini, etc.)
@@ -1189,13 +1261,25 @@ class WhatsAppGeminiBot:
             logger.error(f"Erro ao refinar conteúdo do lembrete com Gemini para {chat_id}: {e}", exc_info=True)
             return original_content
 
-    def _save_reminder_to_db(self, chat_id: str, content: str, reminder_time_utc: datetime, recurrence: str, original_message_id: str, day_of_month: Optional[int] = None):
+    def _save_reminder_to_db(self, chat_id: str, content: str, reminder_time_utc: datetime, 
+                             recurrence: str, original_message_id: str, 
+                             day_of_month: Optional[int] = None):
         """Saves the complete reminder to Firestore."""
         try:
+            # Garantir que reminder_time_utc está em UTC
+            if reminder_time_utc.tzinfo is None:
+                # Se não tem timezone, erro - deve ser corrigido antes
+                logger.error(f"reminder_time_utc sem timezone! Assumindo São Paulo.")
+                reminder_time_sp = self.target_timezone.localize(reminder_time_utc)
+                reminder_time_utc = reminder_time_sp.astimezone(timezone.utc)
+            elif reminder_time_utc.tzinfo != timezone.utc:
+                # Converter para UTC se não estiver
+                reminder_time_utc = reminder_time_utc.astimezone(timezone.utc)
+
             reminder_payload = {
                 "chat_id": chat_id,
                 "content": content,
-                "reminder_time_utc": reminder_time_utc,
+                "reminder_time_utc": reminder_time_utc,  # Sempre UTC no banco
                 "recurrence": recurrence,
                 "is_active": True,
                 "created_at": firestore.SERVER_TIMESTAMP,
@@ -1203,16 +1287,21 @@ class WhatsAppGeminiBot:
                 "original_message_id": original_message_id,
                 "original_hour_utc": reminder_time_utc.hour,
                 "original_minute_utc": reminder_time_utc.minute,
+                "timezone": self.TARGET_TIMEZONE_NAME  # Salvar timezone para referência
             }
+
             if recurrence == "monthly" and day_of_month is not None:
                 reminder_payload["original_day_of_month"] = day_of_month
 
             doc_ref = self.db.collection("reminders").document()
             doc_ref.set(reminder_payload)
-            logger.info(f"Lembrete salvo no Firestore para {chat_id}: {content} @ {reminder_time_utc}")
+
+            # Log com horário local para clareza
+            reminder_time_local = reminder_time_utc.astimezone(self.target_timezone)
+            logger.info(f"Lembrete salvo para {chat_id}: {content} @ {reminder_time_local.strftime('%d/%m/%Y %H:%M %Z')} (UTC: {reminder_time_utc.strftime('%Y-%m-%d %H:%M:%S')})")
+
         except Exception as e:
-            logger.error(f"Erro ao salvar lembrete para {chat_id} no Firestore: {e}", exc_info=True)
-            # Inform user about failure?
+            logger.error(f"Erro ao salvar lembrete para {chat_id}: {e}", exc_info=True)
             self.send_whatsapp_message(chat_id, "Desculpe, não consegui salvar seu lembrete. Tente novamente mais tarde.", reply_to=original_message_id)
             self._save_conversation_history(chat_id, "Desculpe, não consegui salvar seu lembrete. Tente novamente mais tarde.", True)
 
@@ -1579,6 +1668,53 @@ class WhatsAppGeminiBot:
             # Gerar resposta do Gemini
             response_text = self.generate_gemini_response(full_user_input_text, chat_id, current_interaction_timestamp)
             logger.info(f"Resposta do Gemini gerada para {chat_id}: {response_text[:100]}...")
+
+            # NOVO: Verificar se a resposta do Gemini indica criação de lembrete
+            reminder_details = self._detect_reminder_in_gemini_response(response_text)
+            
+            if reminder_details.get("found"):
+                logger.info(f"Lembrete detectado na resposta do Gemini para {chat_id}")
+                
+                # Se faltam detalhes, usar a mensagem original para complementar
+                if not reminder_details.get("content") or not reminder_details.get("datetime_obj"):
+                    original_details = self._extract_reminder_details_from_text(full_user_input_text, chat_id)
+                    
+                    if not reminder_details.get("content") and original_details.get("content"):
+                        reminder_details["content"] = original_details["content"]
+                    
+                    if not reminder_details.get("datetime_obj") and original_details.get("datetime_obj"):
+                        reminder_details["datetime_obj"] = original_details["datetime_obj"]
+                
+                # Se temos todos os detalhes necessários, criar o lembrete
+                if reminder_details.get("content") and reminder_details.get("datetime_obj"):
+                    # Garantir que o datetime está em UTC
+                    datetime_utc = reminder_details["datetime_obj"]
+                    if datetime_utc.tzinfo is None:
+                        # Se não tem timezone, assumir São Paulo e converter para UTC
+                        datetime_sp = self.target_timezone.localize(datetime_utc)
+                        datetime_utc = datetime_sp.astimezone(timezone.utc)
+                    elif datetime_utc.tzinfo != timezone.utc:
+                        # Se tem timezone mas não é UTC, converter
+                        datetime_utc = datetime_utc.astimezone(timezone.utc)
+                    
+                    # Salvar o lembrete
+                    self._save_reminder_to_db(
+                        chat_id,
+                        reminder_details["content"],
+                        datetime_utc,
+                        reminder_details.get("recurrence", "none"),
+                        all_message_ids[-1] if all_message_ids else None
+                    )
+                    
+                    # Adicionar confirmação do lembrete à resposta
+                    datetime_local = datetime_utc.astimezone(self.target_timezone)
+                    datetime_local_str = datetime_local.strftime('%d/%m/%Y às %H:%M')
+                    
+                    confirmation_text = f"\n\n✅ Lembrete agendado para {datetime_local_str}"
+                    if reminder_details.get("recurrence", "none") != "none":
+                        confirmation_text += f" (Recorrência: {reminder_details['recurrence']})"
+                    
+                    response_text += confirmation_text
 
             # Enviar resposta ao WhatsApp
             last_message_id_to_reply = all_message_ids[-1] if all_message_ids else None
