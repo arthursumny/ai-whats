@@ -1410,8 +1410,8 @@ class WhatsAppGeminiBot:
 
                 # Listas de variações para cada parte da mensagem
                 saudacoes = ["Olá", "Ei", "Oii", "Oie", "Buenas!", "E aí"]
-                mensagens = ["estou passando para te lembrar", "só um lembrete rápido", "não se esqueça", "passando para avisar", "queria te lembrar", "lembrete importante"]
-                introducoes = ["Não esqueça de", "Lembre-se de", "Por favor, não esqueça"]
+                mensagens = ["estou passando para te lembrar", "só um lembrete rápido", "passando para avisar", "queria te lembrar", "lembrete importante"]
+                introducoes = ["Não esqueça de", "Lembre-se de", "Por favor, não esqueça de"]
                 despedidas = ["Até logo", "Até mais", "Até breve", "Tchau"]
                 emojis = ["🙂", "😊", "👍", "🌟", "✨", "🙌", "⏰"]
 
