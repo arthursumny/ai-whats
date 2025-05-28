@@ -46,7 +46,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class WhatsAppGeminiBot:
-    PENDING_CHECK_INTERVAL = 5
+    PENDING_CHECK_INTERVAL = 1
     REENGAGEMENT_TIMEOUT = (60 * 60 * 24 * 2)  # 2 dias em segundos
     # REENGAGEMENT_MESSAGES não será mais usado para a lógica principal,
     # mas pode ser um fallback se a geração do Gemini falhar.
@@ -334,7 +334,6 @@ class WhatsAppGeminiBot:
         """Remove mensagens processadas"""
         doc_ref = self.db.collection("pending_messages").document(chat_id)
         doc_ref.delete()
-        logger.info(f"Mensagens pendentes removidas para {chat_id}")
 
     def _message_exists(self, message_id: str) -> bool:
         """Verifica se a mensagem já foi processada (Firestore)"""
@@ -349,7 +348,6 @@ class WhatsAppGeminiBot:
                 "is_active": False,
                 "cancelled_at": firestore.SERVER_TIMESTAMP
             })
-            logger.info(f"Lembrete {reminder_id} marcado como inativo (cancelado).")
             return True
         except Exception as e:
             logger.error(f"Erro ao desativar lembrete {reminder_id}: {e}", exc_info=True)
@@ -475,7 +473,6 @@ class WhatsAppGeminiBot:
                 temperature=0.55
             )
 
-            logger.info(f"Configuração do Gemini com modelo {self.gemini_model_name} concluída.")
             self.test_whapi_connection()
         except Exception as e:
             logger.error(f"Erro na configuração das APIs: {e}")
@@ -553,14 +550,12 @@ class WhatsAppGeminiBot:
                 timeout=10
             )
             response.raise_for_status()
-            logger.info(f"Conexão com Whapi.cloud verificada com sucesso: {response.json()}")
             return True
         except Exception as e:
             logger.error(f"Falha na conexão com Whapi.cloud: {e}")
             raise
 
     def process_whatsapp_message(self, message: Dict[str, Any]) -> None:
-        logger.info(f"Raw mensagem recebida: {message}")
 
         message_id = message.get('id')
         if not message_id:
@@ -1541,7 +1536,6 @@ class WhatsAppGeminiBot:
         """Processa todas as mensagens acumuladas, incluindo mídias."""
         doc_ref = self.db.collection("pending_messages").document(chat_id)
         try:
-            logger.info(f"Iniciando processamento para {chat_id}")
             
             doc = doc_ref.get() # Obter os dados mais recentes
             if not doc.exists:
@@ -1756,7 +1750,6 @@ class WhatsAppGeminiBot:
             # Atualizar histórico e limpar mensagens pendentes
             self.update_conversation_context(chat_id, full_user_input_text, response_text)
             self._delete_pending_messages(chat_id) # Sucesso, deleta as pendentes
-            logger.info(f"Processamento para {chat_id} concluído com sucesso.")
 
         except Exception as e:
             logger.error(f"ERRO CRÍTICO ao processar mensagens para {chat_id}: {e}", exc_info=True)
