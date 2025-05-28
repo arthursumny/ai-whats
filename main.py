@@ -186,7 +186,7 @@ class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai") # Seu projeto
-        self.pending_timeout = 15  # Timeout para mensagens pendentes (em segundos)
+        self.pending_timeout = 10  # Timeout para mensagens pendentes (em segundos)
         self.target_timezone = pytz.timezone(self.TARGET_TIMEZONE_NAME) # Objeto pytz timezone
 
         if not all([self.whapi_api_key, self.gemini_api_key]):
@@ -403,7 +403,7 @@ class WhatsAppGeminiBot:
             summary_doc = summary_ref.get()
             summary = summary_doc.get("summary") if summary_doc.exists else ""
 
-            history = self._get_conversation_history(chat_id, limit=100) # Limite menor para prompt
+            history = self._get_conversation_history(chat_id, limit=50) # Limite menor para prompt
 
             current_timestamp_iso = current_message_timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')
 
@@ -425,18 +425,16 @@ class WhatsAppGeminiBot:
             # Monta o prompt final
             final_prompt = []
             if summary:
-                final_prompt.append(f"### Resumo da conversa anterior ###\n{summary}\n")
+                final_prompt.append(f"### Resumo de conversas anteriores ###\n{summary}\n")
             if context_str: 
-                final_prompt.append(f"### Histórico recente da conversa (com timestamps UTC) ###\n{context_str}\n")
+                final_prompt.append(f"### Histórico recente da conversa, nao responda elas, apenas use para uma possível referencia a (com timestamps) ###\n{context_str}\n")
             
             final_prompt.append(
-                "### Nova interação, responda a esta nova interação. ###\n"
-                f"A mensagem atual de {user_display_name} foi recebida em {current_timestamp_iso} (UTC).\n"
+                "### Nova interação, responda apenas a esta nova interação. ###\n"
                 "Considere os timestamps das mensagens do histórico e da mensagem atual. "
                 "Se uma mensagem do histórico for significativamente antiga em relação à mensagem atual, "
-                "avalie cuidadosamente se o tópico ainda é relevante e se faz sentido continuar ou referenciar essa conversa antiga. "
-                "Priorize a relevância para a interação atual. "
-                "Use o histórico e o resumo acima como contexto apenas se forem pertinentes para a nova interação."
+                "avalie cuidadosamente se o tópico ainda é relevante e se faz sentido continuar ou referenciar essa conversa antiga."
+                "Use o histórico e o resumo acima como contexto apenas se forem pertinentes para a nova interação. Mas responda apenas a essa mensagem."
             )
             final_prompt.append(f"{user_display_name} (em {current_timestamp_iso}): {current_prompt_text}")
             
@@ -1659,7 +1657,7 @@ class WhatsAppGeminiBot:
             summary_doc = summary_ref.get()
             summary_text = summary_doc.get("summary") if summary_doc.exists else ""
 
-            history_list = self._get_conversation_history(chat_id, limit=100) # Últimas 10 trocas
+            history_list = self._get_conversation_history(chat_id, limit=50) # Últimas 10 trocas
             
             history_parts_reengagement = []
             for msg in history_list:
@@ -1837,10 +1835,9 @@ class WhatsAppGeminiBot:
             )
             # Contar documentos pode ser caro. Uma alternativa é buscar com limit.
             # Se o número de documentos retornados atingir o limite, então resumir.
-            docs_to_check = list(query.limit(101).stream()) # Um a mais que o limite para saber se passou
+            docs_to_check = list(query.limit(51).stream()) # Um a mais que o limite para saber se passou
 
-            if len(docs_to_check) < 100: # Limite para resumir
-                logger.info(f"Chat {chat_id} tem {len(docs_to_check)} mensagens não resumidas. Não é hora de resumir.")
+            if len(docs_to_check) < 50: # Limite para resumir
                 return
             
             # Pegar as mensagens para resumir (as 100 mais antigas não resumidas)
@@ -1849,7 +1846,7 @@ class WhatsAppGeminiBot:
                 .where(filter=FieldFilter("chat_id", "==", chat_id))
                 .where(filter=FieldFilter("summarized", "==", False))
                 .order_by("timestamp", direction=firestore.Query.ASCENDING) # Mais antigas primeiro
-                .limit(100) # Resumir em lotes de 100
+                .limit(50) # Resumir em lotes
             )
             docs_to_summarize = list(query_summarize.stream())
 
@@ -1869,12 +1866,11 @@ class WhatsAppGeminiBot:
             full_text_for_summary = "\n".join(message_texts_for_summary)
 
             summary_prompt = (
-                "Você é um assistente encarregado de resumir conversas. Abaixo está um trecho de uma conversa entre um Usuário e um Assistente. "
+                "Você é um assistente encarregado de resumir conversas. Abaixo está um trecho das interações do usuário. "
                 "Seu objetivo é criar um resumo conciso que capture os pontos principais, decisões tomadas, informações importantes compartilhadas (nomes, locais, datas, preferências, problemas, soluções), "
-                "e o sentimento geral ou intenção da conversa. O resumo será usado para dar contexto a futuras interações.\n\n"
+                "e o sentimento geral ou intenção da conversa. O resumo será usado para dar contexto a futuras interações, use o minimo possível de palavras e seja vem objetivo.\n\n"
                 "CONVERSA:\n"
                 f"{full_text_for_summary}\n\n"
-                "RESUMO CONCISO DA CONVERSA:"
             )
             
             # Gerar resumo com Gemini (sem tools aqui)
