@@ -226,7 +226,7 @@ class WhatsAppGeminiBot:
             "datetime_obj": None,
             "recurrence": "none"
         }
-        
+
         # Padrões melhorados para extrair conteúdo
         content_patterns = [
             # Entre aspas
@@ -240,7 +240,7 @@ class WhatsAppGeminiBot:
             # Conteúdo antes de indicadores de tempo
             r'(?:de\s+|para\s+)?(.+?)\s+(?:hoje|amanhã|depois)',
         ]
-        
+
         for pattern in content_patterns:
             match = re.search(pattern, response_text, re.IGNORECASE)
             if match:
@@ -254,7 +254,7 @@ class WhatsAppGeminiBot:
                 if len(content_words) > 3:
                     content_words = [w for w in content_words if w.lower() not in stopwords]
                     content = ' '.join(content_words)
-                
+
                 if content and len(content) > 2:  # Conteúdo válido
                     details["content"] = content
                     logger.debug(f"Conteúdo extraído: '{content}'")
@@ -269,19 +269,19 @@ class WhatsAppGeminiBot:
             # Palavras temporais
             r'\b(hoje|amanhã|depois\s+de\s+amanhã)\b',
         ]
-        
+
         # Primeiro, tentar extrair horários específicos
         time_match = re.search(r'(?:às|as)\s*(\d{1,2}):?(\d{0,2})', response_text, re.IGNORECASE)
         date_indicators = re.findall(r'\b(hoje|amanhã|depois\s+de\s+amanhã)\b', response_text, re.IGNORECASE)
-        
+
         try:
             now_local = datetime.now(self.target_timezone)
             parsed_dt = None
-            
+
             if time_match:
                 hour = int(time_match.group(1))
                 minute = int(time_match.group(2)) if time_match.group(2) else 0
-                
+
                 # Determinar o dia
                 if date_indicators:
                     date_word = date_indicators[0].lower()
@@ -296,7 +296,7 @@ class WhatsAppGeminiBot:
                     parsed_dt = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
                     if parsed_dt <= now_local:
                         parsed_dt += timedelta(days=1)
-            
+
             if not parsed_dt:
                 # Tentar parsing mais genérico
                 cleaned_text = self._clean_text_for_parsing(response_text)
@@ -306,20 +306,20 @@ class WhatsAppGeminiBot:
                     dayfirst=True,
                     default=now_local.replace(hour=9, minute=0, second=0)
                 )
-                
+
                 if parsed_dt_naive.tzinfo is None:
                     parsed_dt = self.target_timezone.localize(parsed_dt_naive)
                 else:
                     parsed_dt = parsed_dt_naive.astimezone(self.target_timezone)
-            
+
             # Converter para UTC
             if parsed_dt:
                 details["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
                 logger.debug(f"Data/hora extraída: {parsed_dt} (UTC: {details['datetime_obj']})")
-            
+
         except (ValueError, TypeError) as e:
             logger.debug(f"Não foi possível extrair data/hora da resposta: {e}")
-        
+
         # Detectar recorrência
         for phrase, recurrence_type in self.RECURRENCE_KEYWORDS.items():
             if normalizar_texto(phrase) in normalizar_texto(response_text):
@@ -1405,13 +1405,29 @@ class WhatsAppGeminiBot:
                 reminder_time_local = reminder_time_utc.astimezone(self.target_timezone)
                 logger.info(f"Enviando lembrete ID {reminder_id} para {chat_id}: '{content}' agendado para {reminder_time_local.strftime('%d/%m/%Y %H:%M:%S %Z')}")
                 
+                
+                
+
+                # Listas de variações para cada parte da mensagem
+                saudacoes = ["Olá", "Ei", "Oii", "Oie", "Buenas!", "E aí"]
+                mensagens = ["estou passando para te lembrar", "só um lembrete rápido", "não se esqueça", "passando para avisar", "queria te lembrar", "lembrete importante"]
+                introducoes = ["Não esqueça de", "Lembre-se de", "Por favor, não esqueça"]
+                despedidas = ["Até logo", "Até mais", "Até breve", "Tchau"]
+                emojis = ["🙂", "😊", "👍", "🌟", "✨", "🙌", "⏰"]
+
+                saudacao = random.choice(saudacoes)
+                mensagem = random.choice(mensagens)
+                introducao = random.choice(introducoes)
+                despedida = random.choice(despedidas)
+                emoji = random.choice(emojis)
+        
                 # A mensagem para o usuário não inclui a hora, então não precisa de conversão aqui.
                 # Mas se incluísse, seria:
                 # local_reminder_time_for_msg = reminder_time_utc.astimezone(self.target_timezone)
                 # message_to_send = f"Não esqueça de: {content} (agendado para {local_reminder_time_for_msg.strftime('%H:%M')})"
-                message_to_send = (f"Olá, estou passando aqui para te lembrar!\n\n"
-                                   f"Não esqueça de: {content}\n\n"
-                                   "Até logo 🙂")
+                message_to_send = (f"{saudacao}, {mensagem}!\n\n"
+                                   f"{introducao}: {content}\n\n"
+                                   f"{despedida} {emoji}")
                 
                 success = self.send_whatsapp_message(chat_id, message_to_send, reply_to=None)
 
@@ -1421,7 +1437,6 @@ class WhatsAppGeminiBot:
                     update_data = {"last_sent_at": firestore.SERVER_TIMESTAMP}
                     if recurrence == "none":
                         update_data["is_active"] = False
-                        logger.info(f"Lembrete {reminder_id} (não recorrente) marcado como inativo.")
                     else:
                         original_hour = reminder_data.get("original_hour_utc", reminder_time_utc.hour)
                         original_minute = reminder_data.get("original_minute_utc", reminder_time_utc.minute)
@@ -1453,7 +1468,6 @@ class WhatsAppGeminiBot:
                 stale_reminder_sessions.append(chat_id)
 
         for chat_id in stale_reminder_sessions:
-            logger.info(f"Removendo sessão de criação de lembrete expirada para o chat {chat_id}.")
             del self.pending_reminder_sessions[chat_id]
 
         # Clean cancellation sessions
@@ -1465,7 +1479,7 @@ class WhatsAppGeminiBot:
 
         for chat_id in stale_cancellation_sessions:
             if chat_id in self.pending_cancellation_sessions:
-                logger.info(f"Removendo sessão de cancelamento de lembrete expirada para o chat {chat_id}.")
+                b = 0
             del self.pending_cancellation_sessions[chat_id]
 
     def _check_pending_messages(self, chat_id: str):
@@ -1478,7 +1492,6 @@ class WhatsAppGeminiBot:
 
             data = doc.to_dict()
             if data.get('processing', False):
-                logger.info(f"Chat {chat_id} já está em processamento, pulando.")
                 return
 
             last_update_dt = data.get('last_update')
@@ -1497,7 +1510,6 @@ class WhatsAppGeminiBot:
             
             # Verifica se existem mensagens
             if not data.get('messages'):
-                logger.info(f"Nenhuma mensagem na fila para {chat_id}, limpando documento pendente se existir.")
                 doc_ref.delete() # Limpa se estiver vazio
                 return
 
@@ -1505,9 +1517,6 @@ class WhatsAppGeminiBot:
             timeout_seconds = (now - last_update_dt).total_seconds()
 
             if timeout_seconds >= self.pending_timeout:
-                logger.info(f"Timeout atingido para {chat_id} ({timeout_seconds}s). Marcando para processamento.")
-                # Marca como processando ANTES de iniciar o processamento real
-                # Usar transação para evitar condição de corrida
                 @firestore.transactional
                 def mark_as_processing(transaction, doc_ref_trans):
                     snapshot = doc_ref_trans.get(transaction=transaction)
@@ -1518,8 +1527,6 @@ class WhatsAppGeminiBot:
 
                 if mark_as_processing(self.db.transaction(), doc_ref):
                     self._process_pending_messages(chat_id)
-                else:
-                    logger.info(f"Não foi possível marcar {chat_id} como processando (talvez outro worker pegou).")
 
         except Exception as e:
             logger.error(f"Erro ao verificar mensagens pendentes para {chat_id}: {e}", exc_info=True)
@@ -1550,7 +1557,6 @@ class WhatsAppGeminiBot:
                 self._delete_pending_messages(chat_id) # Limpa se estiver vazio
                 return
 
-            logger.info(f"Processando {len(pending_msg_list)} mensagens para {chat_id}")
             
             # Ordenar por timestamp (string ISO guardada)
             try:
@@ -1583,7 +1589,6 @@ class WhatsAppGeminiBot:
                 content = msg_data['content'] # Texto ou media_url
                 original_caption = msg_data.get('original_caption')
                 mimetype = msg_data.get('mimetype')
-                logger.info(f"Processing message of type: {msg_type}, content: {content}, mimetype: {mimetype}")
 
                 if msg_type == 'text':
                     if content and content.strip():
@@ -1684,7 +1689,6 @@ class WhatsAppGeminiBot:
                                 
             # Consolidar todos os textos processados
             full_user_input_text = "\n".join(processed_texts_for_gemini).strip()
-            logger.info(f"Texto consolidado para Gemini ({chat_id}): {full_user_input_text[:200]}...")
 
             if not full_user_input_text:
                 logger.info(f"Nenhum texto processável após processar mensagens pendentes para {chat_id}. Limpando e saindo.")
@@ -1694,7 +1698,6 @@ class WhatsAppGeminiBot:
             
             # Gerar resposta do Gemini
             response_text = self.generate_gemini_response(full_user_input_text, chat_id, current_interaction_timestamp)
-            logger.info(f"Resposta do Gemini gerada para {chat_id}: {response_text[:100]}...")
 
             # NOVO: Verificar se a resposta do Gemini indica criação de lembrete
             reminder_details = self._detect_reminder_in_gemini_response(response_text)
