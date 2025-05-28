@@ -18,6 +18,12 @@ import pytz
 import random
 import calendar
 
+# Forçar timezone do ambiente (não altera o sistema, só o processo Python)
+os.environ['TZ'] = 'America/Sao_Paulo'
+
+# Garantir que datetime.now() sempre retorne hora de SP por padrão
+time.tzset() if hasattr(time, 'tzset') else None
+
 
 # Carrega variáveis do .env
 load_dotenv()
@@ -159,7 +165,18 @@ class WhatsAppGeminiBot:
         self.reload_env()
         self.db = firestore.Client(project="voola-ai") # Seu projeto
         self.pending_timeout = 20  # Timeout para mensagens pendentes (em segundos)
-        self.target_timezone = pytz.timezone(self.TARGET_TIMEZONE_NAME) # Objeto pytz timezone
+
+        # FORÇAR o uso do timezone de São Paulo independente do servidor
+        import pytz
+        self.target_timezone = pytz.timezone('America/Sao_Paulo')
+
+        # Verificar e log do timezone atual
+        logger.info(f"=== INICIALIZAÇÃO TIMEZONE ===")
+        logger.info(f"Sistema: {datetime.now().astimezone().tzinfo}")
+        logger.info(f"Target: {self.target_timezone}")
+        logger.info(f"Hora SP: {datetime.now(self.target_timezone)}")
+        logger.info(f"Hora UTC: {datetime.now(timezone.utc)}")
+        logger.info(f"=============================")
 
         if not all([self.whapi_api_key, self.gemini_api_key]):
             raise ValueError("Chaves API não configuradas no .env")
@@ -967,6 +984,13 @@ class WhatsAppGeminiBot:
         cleaned_for_datetime = self._clean_text_for_parsing(text_to_parse)
         try:
             now_local = datetime.now(self.target_timezone)
+            logger.info(f"=== DEBUG TIMEZONE ===")
+            logger.info(f"Sistema timezone: {datetime.now().astimezone().tzinfo}")
+            logger.info(f"Target timezone: {self.target_timezone}")
+            logger.info(f"Now local (São Paulo): {now_local}")
+            logger.info(f"Now UTC: {datetime.now(timezone.utc)}")
+            logger.info(f"Texto para parsing: '{cleaned_for_datetime}'")
+            logger.info(f"==================")
             parsed_dt_naive, non_datetime_tokens = dateutil_parser.parse(
                 cleaned_for_datetime,
                 fuzzy_with_tokens=True,
@@ -1135,7 +1159,16 @@ class WhatsAppGeminiBot:
 
         elif current_state == self.REMINDER_STATE_AWAITING_DATETIME:
             try:
-                now_local = datetime.now(self.target_timezone)
+                import pytz
+                sp_tz = pytz.timezone('America/Sao_Paulo')
+                now_local = datetime.now(sp_tz)
+
+                # ADICIONAR LOGS DE DEBUG:
+                logger.info(f"=== DEBUG PARSING DATETIME ===")
+                logger.info(f"Input text: '{text}'")
+                logger.info(f"Now local (SP): {now_local}")
+                logger.info(f"Now UTC: {datetime.now(timezone.utc)}")
+
                 cleaned_text = self._clean_text_for_parsing(text)
 
                 # Parse with default to start of current day
@@ -1400,7 +1433,7 @@ class WhatsAppGeminiBot:
                 
 
                 # Listas de variações para cada parte da mensagem
-                saudacoes = ["Olá", "Ei", "Oii", "Oie", "Buenas!", "E aí"]
+                saudacoes = ["Olá", "Ei", "Oii", "Oie", "Oi", "E aí"]
                 mensagens = ["estou passando para te lembrar", "só um lembrete rápido", "passando para avisar", "queria te lembrar", "lembrete importante"]
                 introducoes = ["Não esqueça de", "Lembre-se de", "Por favor, não esqueça de"]
                 despedidas = ["Até logo", "Até mais", "Até breve", "Tchau"]
