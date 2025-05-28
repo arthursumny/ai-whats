@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 class WhatsAppGeminiBot:
     PENDING_CHECK_INTERVAL = 5
-    REENGAGEMENT_TIMEOUT = (60 * 60 * 24 * 3)  # 3 dias em segundos
+    REENGAGEMENT_TIMEOUT = (60 * 60 * 24 * 2)  # 2 dias em segundos
     # REENGAGEMENT_MESSAGES não será mais usado para a lógica principal,
     # mas pode ser um fallback se a geração do Gemini falhar.
     FALLBACK_REENGAGEMENT_MESSAGES = [
@@ -71,50 +71,37 @@ class WhatsAppGeminiBot:
         "depois", "antes", "proximo", "proxima"
     ]
 
-    REMINDER_REQUEST_KEYWORDS_REGEX = r"""(?ix)
+    GEMINI_REMINDER_CONFIRMATION_REGEX = r"""(?ix)
 (
-    # Pattern 1: "me lembre/avise/alerte"
-    (?: (?:pode|voce|poderia|consegue|da|dá|vai|preciso)\s+)?
+    # Padrões de confirmação de lembrete
     (?:
-        me\s+(?:lembre|lembra|lembrar|avise|avisa|avisar|alerte|alerta|alertar|recorde|recorda|recordar|notifique|notifica|notificar)
+        # "lembrete está/foi agendado/criado/anotado"
+        lembrete\s+(?:está|esta|foi|será|sera)\s+(?:agendado|criado|anotado|marcado|definido|configurado|certinho|pronto|ok)
         |
-        (?:lembre|lembra|lembrar|avise|avisa|avisar|alerte|alerta|alertar|recorde|recorda|recordar|notifique|notifica|notificar)\s*-?\s*me
-    )
-    (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
-    |
-    # Pattern 2: "criar/fazer lembrete"
-    (?:
-        (?:faça|fazer|crie|criar|adicione|adicionar|anote|anotar|agende|agendar|coloque|colocar|bote|botar|marque|marcar)\s+
-        (?:um|o|esse|este|aquele|um novo|o novo)?\s*
-        (?:novo\s+)?
-        lembrete
-    )
-    (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
-    |
-    # Pattern 3: "lembrete para/de"
-    lembrete\s+(?:para|de|sobre|do|da|dos|das)
-    |
-    # Pattern 4: "não me deixe esquecer"
-    (?:nao|não)\s+
-    (?:
-        (?:me\s+)?(?:deixe|deixa|quero|posso|vai|vá)\s*(?:me\s+)?esquecer
+        # "agendei/criei/anotei um lembrete"
+        (?:agendei|criei|anotei|marquei|defini|configurei)\s+(?:um\s+|o\s+)?lembrete
         |
-        (?:se\s+)?esquecer?
+        # "vou te lembrar/lembrarei"
+        (?:vou\s+(?:te\s+)?lembrar|lembrarei|te\s+lembrarei|vou\s+(?:te\s+)?avisar|avisarei)
         |
-        se\s+esqueca
+        # "está certinho/pronto/ok"
+        (?:está|esta|tá|ta)\s+(?:confirmado|anotado|agendado)
+        |
+        # "não esqueça/esquecerei"
+        (?:não\s+(?:vou\s+)?esquecer|nao\s+(?:vou\s+)?esquecer|pode\s+deixar|deixa\s+comigo)
+        |
+        # "lembrete para X às Y"
+        lembrete\s+(?:de\s+|para\s+|sobre\s+)?.+?(?:às|as|para)\s+\d{1,2}(?::\d{2})?
+        |
+        # "te lembro/aviso X"
+        te\s+(?:lembro|aviso|alerto|notifico)\s+(?:de\s+|para\s+|sobre\s+)?
+        |
+        # "anotado para X"
+        (?:anotado|agendado|marcado)\s+para
+        |
+        # "X está/foi agendado"
+        .+?\s+(?:está|esta|foi)\s+(?:agendado|anotado|marcado)
     )
-    (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
-    |
-    # Pattern 5: "me ajude a lembrar"
-    (?: (?:pode|voce|poderia|consegue)\s+)?
-    me\s+ajud[ae]\s+a\s+lembrar
-    (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
-    |
-    # Pattern 6: "preciso me lembrar"
-    (?:preciso|necessito|quero|gostaria)\s+
-    (?:me\s+)?
-    (?:lembrar|recordar|não\s+esquecer)
-    (?:\s+(?:de|para|que|sobre|do|da|dos|das))?
 )
 """
 
@@ -153,17 +140,6 @@ class WhatsAppGeminiBot:
         "quinta-feira": "thursday", "sexta-feira": "friday"
     }
 
-    MONTHLY_DAY_SPECIFIC_REGEX = r"""(?ix)
-    \b(?:
-        (?:todo\s+dia|mensalmente\s+(?:no\s+)?dia|dia) # "todo dia 10", "mensalmente dia 10", "dia 10" (when context implies monthly)
-        \s+(\d{1,2})                                  # The day number (1-31)
-        (?:
-            \s+(?:de\s+cada\s+m[eê]s|por\s+m[eê]s)     # Optional "de cada mes", "por mes"
-        )?
-    |
-        (?:todo\s+m[eê]s|mensalmente)\s+dia\s+(\d{1,2}) # "todo mes dia 10"
-    )\b
-    """
     MONTHLY_DAY_SPECIFIC_REGEX = r"""(?ix)
     \b(?:
         (?:todo\s+dia|mensalmente\s+(?:no\s+)?dia|dia) # "todo dia 10", "mensalmente dia 10", "dia 10" (when context implies monthly)
@@ -233,20 +209,10 @@ class WhatsAppGeminiBot:
         Detecta se a resposta do Gemini indica que um lembrete deve ser criado.
         Retorna detalhes extraídos se encontrado.
         """
-        reminder_indicators = [
-            "vou te lembrar", "vou lembrar", "te lembrarei", "lembrarei você",
-            "lembrete agendado", "lembrete criado", "agendei um lembrete",
-            "anotei para te lembrar", "vou te avisar", "te aviso",
-            "agendado para", "marcado para", "definido para"
-        ]
-
-        normalized_response = normalizar_texto(response_text)
-
-        for indicator in reminder_indicators:
-            if normalizar_texto(indicator) in normalized_response:
-                logger.info(f"Indicador de lembrete detectado na resposta do Gemini: '{indicator}'")
-                # Extrair detalhes do lembrete da resposta
-                return self._extract_reminder_from_gemini_response(response_text)
+        # Usar regex robusto ao invés de lista simples
+        if re.search(self.GEMINI_REMINDER_CONFIRMATION_REGEX, response_text, re.IGNORECASE):
+            logger.info(f"Padrão de confirmação de lembrete detectado na resposta do Gemini")
+            return self._extract_reminder_from_gemini_response(response_text)
 
         return {"found": False}
 
@@ -260,46 +226,107 @@ class WhatsAppGeminiBot:
             "datetime_obj": None,
             "recurrence": "none"
         }
-
-        # Usar regex para encontrar padrões comuns de lembrete na resposta
-        # Exemplo: "Vou te lembrar de [conteúdo] em [data/hora]"
-
-        # Padrão para conteúdo entre aspas ou após "de"
+        
+        # Padrões melhorados para extrair conteúdo
         content_patterns = [
-            r'"([^"]+)"',  # Conteúdo entre aspas
-            r'lembrar (?:de |para |que )?(.+?)(?:\s+(?:em|no|na|às|para|amanhã|hoje)|\.|\!|\?|$)',
-            r'sobre:?\s*(.+?)(?:\s+(?:em|no|na|às|para)|\.|\!|\?|$)'
+            # Entre aspas
+            r'"([^"]+)"',
+            r"'([^']+)'",
+            # Após palavras-chave de lembrete
+            r'lembrete\s+(?:de\s+|para\s+|sobre\s+)?([^\.!?,]+?)(?:\s+(?:às|as|para|hoje|amanhã|em)\s+|\.|\!|\?|,|$)',
+            r'(?:lembrar|avisar|alertar)\s+(?:de\s+|para\s+|sobre\s+|que\s+)?([^\.!?,]+?)(?:\s+(?:às|as|para|hoje|amanhã|em)\s+|\.|\!|\?|,|$)',
+            # Padrão específico para "X às Y"
+            r'(?:para\s+)?(.+?)\s+(?:às|as)\s+\d{1,2}(?::\d{2})?',
+            # Conteúdo antes de indicadores de tempo
+            r'(?:de\s+|para\s+)?(.+?)\s+(?:hoje|amanhã|depois)',
         ]
-
+        
         for pattern in content_patterns:
             match = re.search(pattern, response_text, re.IGNORECASE)
             if match:
-                details["content"] = match.group(1).strip()
+                content = match.group(1).strip()
+                # Limpar o conteúdo extraído
+                content = re.sub(r'\s+', ' ', content)  # Normalizar espaços
+                # Remover palavras comuns que não devem fazer parte do conteúdo
+                stopwords = ['o', 'a', 'de', 'para', 'que', 'lembrete', 'agendado', 'está', 'foi']
+                content_words = content.split()
+                # Só remover se não ficar muito curto
+                if len(content_words) > 3:
+                    content_words = [w for w in content_words if w.lower() not in stopwords]
+                    content = ' '.join(content_words)
+                
+                if content and len(content) > 2:  # Conteúdo válido
+                    details["content"] = content
+                    logger.debug(f"Conteúdo extraído: '{content}'")
+                    break
+                
+        # Extrair data/hora com padrões mais específicos
+        datetime_patterns = [
+            # Horário explícito
+            r'(?:às|as)\s*(\d{1,2}):?(\d{0,2})',
+            # Data e hora
+            r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\s*(?:às|as)?\s*(\d{1,2}):?(\d{0,2})?',
+            # Palavras temporais
+            r'\b(hoje|amanhã|depois\s+de\s+amanhã)\b',
+        ]
+        
+        # Primeiro, tentar extrair horários específicos
+        time_match = re.search(r'(?:às|as)\s*(\d{1,2}):?(\d{0,2})', response_text, re.IGNORECASE)
+        date_indicators = re.findall(r'\b(hoje|amanhã|depois\s+de\s+amanhã)\b', response_text, re.IGNORECASE)
+        
+        try:
+            now_local = datetime.now(self.target_timezone)
+            parsed_dt = None
+            
+            if time_match:
+                hour = int(time_match.group(1))
+                minute = int(time_match.group(2)) if time_match.group(2) else 0
+                
+                # Determinar o dia
+                if date_indicators:
+                    date_word = date_indicators[0].lower()
+                    if 'hoje' in date_word:
+                        parsed_dt = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    elif 'amanhã' in date_word:
+                        parsed_dt = (now_local + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    elif 'depois' in date_word:
+                        parsed_dt = (now_local + timedelta(days=2)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+                else:
+                    # Se não há indicador de dia, assumir hoje se o horário ainda não passou
+                    parsed_dt = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    if parsed_dt <= now_local:
+                        parsed_dt += timedelta(days=1)
+            
+            if not parsed_dt:
+                # Tentar parsing mais genérico
+                cleaned_text = self._clean_text_for_parsing(response_text)
+                parsed_dt_naive, _ = dateutil_parser.parse(
+                    cleaned_text,
+                    fuzzy_with_tokens=True,
+                    dayfirst=True,
+                    default=now_local.replace(hour=9, minute=0, second=0)
+                )
+                
+                if parsed_dt_naive.tzinfo is None:
+                    parsed_dt = self.target_timezone.localize(parsed_dt_naive)
+                else:
+                    parsed_dt = parsed_dt_naive.astimezone(self.target_timezone)
+            
+            # Converter para UTC
+            if parsed_dt:
+                details["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
+                logger.debug(f"Data/hora extraída: {parsed_dt} (UTC: {details['datetime_obj']})")
+            
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Não foi possível extrair data/hora da resposta: {e}")
+        
+        # Detectar recorrência
+        for phrase, recurrence_type in self.RECURRENCE_KEYWORDS.items():
+            if normalizar_texto(phrase) in normalizar_texto(response_text):
+                details["recurrence"] = recurrence_type
+                logger.debug(f"Recorrência detectada: {recurrence_type}")
                 break
             
-        # Extrair data/hora
-        cleaned_text = self._clean_text_for_parsing(response_text)
-        try:
-            # Tentar extrair datetime da resposta
-            parsed_dt_naive, _ = dateutil_parser.parse(
-                cleaned_text,
-                fuzzy_with_tokens=True,
-                dayfirst=True,
-                default=datetime.now(self.target_timezone).replace(hour=9, minute=0, second=0)
-            )
-
-            # Garantir que está no timezone de São Paulo
-            if parsed_dt_naive.tzinfo is None:
-                parsed_dt = self.target_timezone.localize(parsed_dt_naive)
-            else:
-                parsed_dt = parsed_dt_naive.astimezone(self.target_timezone)
-
-            # Converter para UTC para salvar
-            details["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
-
-        except (ValueError, TypeError) as e:
-            logger.info(f"Não foi possível extrair data/hora da resposta do Gemini: {e}")
-
         return details
 
 
@@ -1604,11 +1631,11 @@ class WhatsAppGeminiBot:
                         image = types.Part.from_bytes(data=image_bytes, mime_type=mimetype)
 
                     
-                        prompt_for_media = "Descreva este arquivo de forma concisa e objetiva."
+                        prompt_for_media = "Descreva este arquivo de forma concisa e objetiva e me retorne apenas a descrição, nada além disso, nenhuma palavra a mais."
                         if msg_type == 'audio' or msg_type == 'voice':
-                            prompt_for_media = "Transcreva este audio, exatamente como está."
+                            prompt_for_media = "Transcreva este audio, exatamente como está e me retorne apenas a transcriçao nenhuma palavra a mais, apenas a transcriçao."
                         elif msg_type == 'document':
-                            prompt_for_media = "Descreva este arquivo pdf de forma concisa e objetiva. Anote todas as informações relevantes."
+                            prompt_for_media = "Descreva este arquivo pdf de forma concisa e objetiva. Anote todas as informações relevantes e me retorne apenas a descrição, nada além disso."
                         
                         # Gerar descrição/transcrição
                         media_desc_response = self.client.models.generate_content(
