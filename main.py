@@ -23,14 +23,10 @@ import calendar
 load_dotenv()
 
 def normalizar_texto(texto):
-    # Remove acentos
     texto = unicodedata.normalize('NFD', texto)
     texto = texto.encode('ascii', 'ignore').decode('utf-8')
-    # Converte para minúsculo
     texto = texto.lower()
-    # Remove espaços duplicados
     texto = re.sub(r'\s+', ' ', texto)
-    # Remove espaços no início/fim
     texto = texto.strip()
     return texto
 
@@ -46,7 +42,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class WhatsAppGeminiBot:
-    PENDING_CHECK_INTERVAL = 1
+    PENDING_CHECK_INTERVAL = 5
     REENGAGEMENT_TIMEOUT = (60 * 60 * 24 * 2)  # 2 dias em segundos
     # REENGAGEMENT_MESSAGES não será mais usado para a lógica principal,
     # mas pode ser um fallback se a geração do Gemini falhar.
@@ -162,7 +158,7 @@ class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai") # Seu projeto
-        self.pending_timeout = 10  # Timeout para mensagens pendentes (em segundos)
+        self.pending_timeout = 20  # Timeout para mensagens pendentes (em segundos)
         self.target_timezone = pytz.timezone(self.TARGET_TIMEZONE_NAME) # Objeto pytz timezone
 
         if not all([self.whapi_api_key, self.gemini_api_key]):
