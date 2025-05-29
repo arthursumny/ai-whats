@@ -514,7 +514,7 @@ class WhatsAppGeminiBot:
             summary_doc = summary_ref.get()
             summary = summary_doc.get("summary") if summary_doc.exists else ""
 
-            history = self._get_conversation_history(chat_id, limit=50) # Limite menor para prompt
+            history = self._get_conversation_history(chat_id, limit=25) # Limite menor para prompt
 
             current_timestamp_iso = current_message_timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')
 
@@ -1845,7 +1845,7 @@ class WhatsAppGeminiBot:
             summary_doc = summary_ref.get()
             summary_text = summary_doc.get("summary") if summary_doc.exists else ""
 
-            history_list = self._get_conversation_history(chat_id, limit=50) # Últimas 10 trocas
+            history_list = self._get_conversation_history(chat_id, limit=25) # Últimas 10 trocas
             
             history_parts_reengagement = []
             for msg in history_list:
@@ -1987,7 +1987,6 @@ class WhatsAppGeminiBot:
             payload["reply"] = reply_to # Whapi usa "reply" para o ID da mensagem a ser respondida
 
         try:
-            logger.info(f"Enviando mensagem para WHAPI: to={chat_id}, reply_to={reply_to}, body='{text[:50]}...'")
             response = requests.post(
                 "https://gate.whapi.cloud/messages/text",
                 headers={
@@ -2023,9 +2022,9 @@ class WhatsAppGeminiBot:
             )
             # Contar documentos pode ser caro. Uma alternativa é buscar com limit.
             # Se o número de documentos retornados atingir o limite, então resumir.
-            docs_to_check = list(query.limit(51).stream()) # Um a mais que o limite para saber se passou
+            docs_to_check = list(query.limit(26).stream()) # Um a mais que o limite para saber se passou
 
-            if len(docs_to_check) < 50: # Limite para resumir
+            if len(docs_to_check) < 25: # Limite para resumir
                 return
             
             # Pegar as mensagens para resumir (as 100 mais antigas não resumidas)
@@ -2034,7 +2033,7 @@ class WhatsAppGeminiBot:
                 .where(filter=FieldFilter("chat_id", "==", chat_id))
                 .where(filter=FieldFilter("summarized", "==", False))
                 .order_by("timestamp", direction=firestore.Query.ASCENDING) # Mais antigas primeiro
-                .limit(50) # Resumir em lotes
+                .limit(25) # Resumir em lotes
             )
             docs_to_summarize = list(query_summarize.stream())
 
