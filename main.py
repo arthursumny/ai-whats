@@ -48,7 +48,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class WhatsAppGeminiBot:
-    PENDING_CHECK_INTERVAL = 5
+    PENDING_CHECK_INTERVAL = 2
     REENGAGEMENT_TIMEOUT = (60 * 60 * 24 * 2)  # 2 dias em segundos
     # REENGAGEMENT_MESSAGES não será mais usado para a lógica principal,
     # mas pode ser um fallback se a geração do Gemini falhar.
@@ -164,7 +164,7 @@ class WhatsAppGeminiBot:
     def __init__(self):
         self.reload_env()
         self.db = firestore.Client(project="voola-ai") # Seu projeto
-        self.pending_timeout = 20  # Timeout para mensagens pendentes (em segundos)
+        self.pending_timeout = 30  # Timeout para mensagens pendentes (em segundos)
 
         # FORÇAR o uso do timezone de São Paulo independente do servidor
         import pytz
