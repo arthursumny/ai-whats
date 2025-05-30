@@ -28,7 +28,14 @@ time.tzset() if hasattr(time, 'tzset') else None
 # Carrega variáveis do .env
 load_dotenv()
 
-
+def normalizar_texto(texto): # Mova ou garanta acesso a esta função se não estiver no escopo da classe
+    if texto is None:
+        return ""
+    texto = unicodedata.normalize('NFD', str(texto))
+    texto = texto.encode('ascii', 'ignore').decode('utf-8')
+    texto = texto.lower()
+    texto = re.sub(r'\s+', ' ', texto)
+    return texto.strip()
     
 # Configuração de logs
 logging.basicConfig(
