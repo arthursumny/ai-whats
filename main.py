@@ -1659,7 +1659,7 @@ class WhatsAppGeminiBot:
                         image = types.Part.from_bytes(data=image_bytes, mime_type=mimetype)
 
                     
-                        prompt_for_media = "Descreva este arquivo de forma concisa e objetiva e me retorne apenas a descrição, nada além disso, nenhuma palavra a mais."
+                        prompt_for_media = "Descreva este arquivo de forma concisa e detalhada e retorne apenas a descrição, nada além disso, nenhuma palavra a mais."
                         if msg_type == 'audio' or msg_type == 'voice':
                             prompt_for_media = "Transcreva este audio, exatamente como está e me retorne apenas a transcriçao nenhuma palavra a mais, apenas a transcriçao."
                         elif msg_type == 'document':
@@ -1674,20 +1674,20 @@ class WhatsAppGeminiBot:
                         media_description = media_desc_response.text.strip()
                         
                         if msg_type == 'audio':
-                            entry = f"{user_from_name} enviou um(a) {msg_type}"
-                            entry += f": [Conteúdo processado da mídia: {media_description}], mantenha esse conteudo na resposta e envie entre *asteriscos*, abaixo disso um resumo também."
+                            entry = f"O usuário enviou um audio"
+                            entry += f": [Conteúdo processado do audio: {media_description}], mantenha esse conteudo na resposta e envie entre *asteriscos*, abaixo disso um resumo também."
                         elif msg_type == 'image':
-                            entry = f"{user_from_name} enviou um(a) {msg_type}"
-                            entry += f": [Conteúdo processado da mídia: {media_description}]."
+                            entry = f"O usuário enviou uma imagem"
+                            entry += f": [Conteúdo processado da imagem: {media_description}]."
                         elif msg_type == 'voice':
-                            entry = f"{user_from_name} enviou um audio"
-                            entry += f": [Conteúdo processado da mídia: {media_description}], responda normalmente como se fosse uma mensagem de texto."
+                            entry = f"O usuário enviou uma mensagem de voz"
+                            entry += f": [Conteúdo processado da mensagem de voz: {media_description}], responda normalmente como se fosse uma mensagem de texto."
                         elif msg_type == 'video':
-                            entry = f"{user_from_name} enviou um(a) {msg_type}"
-                            entry += f": [Conteúdo processado da mídia: {media_description}]."
+                            entry = f"O usuário enviou um video"
+                            entry += f": [Conteúdo processado do video: {media_description}]."
                         elif msg_type == 'document':
-                            entry = f"{user_from_name} enviou um(a) {msg_type}"
-                            entry += f": [Conteúdo processado da mídia: {media_description}]."
+                            entry = f"O usuário enviou um documento"
+                            entry += f": [Conteúdo processado do documento: {media_description}]."
                         processed_texts_for_gemini.append(entry)
 
                     except requests.exceptions.RequestException as e_req:
@@ -1712,6 +1712,7 @@ class WhatsAppGeminiBot:
                                 
             # Consolidar todos os textos processados
             full_user_input_text = "\n".join(processed_texts_for_gemini).strip()
+            logger.info(f"Texto completo do {user_from_name} processado: {full_user_input_text}")
 
             if not full_user_input_text:
                 logger.info(f"Nenhum texto processável após processar mensagens pendentes para {chat_id}. Limpando e saindo.")
