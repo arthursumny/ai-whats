@@ -2121,7 +2121,7 @@ class WhatsAppGeminiBot:
 
                     # 2. Verificar chats inativos para reengajamento (ex: a cada hora)
                     if (now - last_reengagement_check) >= timedelta(hours=1): # Ajuste o intervalo conforme necessidade
-                        self._check_inactive_chats()
+                        #self._check_inactive_chats()
                         last_reengagement_check = now
                     
                     # 3. Verificar e enviar lembretes devidos
