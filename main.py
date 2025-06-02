@@ -246,98 +246,64 @@ class WhatsAppGeminiBot:
             r'"([^"]+)"',
             r"'([^']+)'",
             # Após palavras-chave de lembrete
-            r'lembrete\s+(?:de\s+|para\s+|sobre\s+)?([^\.!?,]+?)(?:\s+(?:às|as|para|hoje|amanhã|em)\s+|\.|\!|\?|,|$)',
-            r'(?:lembrar|avisar|alertar)\s+(?:de\s+|para\s+|sobre\s+|que\s+)?([^\.!?,]+?)(?:\s+(?:às|as|para|hoje|amanhã|em)\s+|\.|\!|\?|,|$)',
+            r'lembrete\\s+(?:de\\s+|para\\s+|sobre\\s+)?([^\\.!?,]+?)(?:\\s+(?:às|as|para|hoje|amanhã|em)\\s+|\\.|\\!|\\?|,|$)',
+            r'(?:lembrar|avisar|alertar)\\s+(?:de\\s+|para\\s+|sobre\\s+|que\\s+)?([^\\.!?,]+?)(?:\\s+(?:às|as|para|hoje|amanhã|em)\\s+|\\.|\\!|\\?|,|$)',
             # Padrão específico para "X às Y"
-            r'(?:para\s+)?(.+?)\s+(?:às|as)\s+\d{1,2}(?::\d{2})?',
+            r'(?:para\\s+)?(.+?)\\s+(?:às|as)\\s+\\d{1,2}(?::\\d{2})?',
             # Conteúdo antes de indicadores de tempo
-            r'(?:de\s+|para\s+)?(.+?)\s+(?:hoje|amanhã|depois)',
+            r'(?:de\\s+|para\\s+)?(.+?)\\s+(?:hoje|amanhã|depois)',
         ]
 
         for pattern in content_patterns:
             match = re.search(pattern, response_text, re.IGNORECASE)
             if match:
                 content = match.group(1).strip()
-                # Limpar o conteúdo extraído
-                content = re.sub(r'\s+', ' ', content)  # Normalizar espaços
-                # Remover palavras comuns que não devem fazer parte do conteúdo
+                content = re.sub(r'\\s+', ' ', content)  # Normalizar espaços
                 stopwords = ['o', 'a', 'de', 'para', 'que', 'lembrete', 'agendado', 'está', 'foi']
                 content_words = content.split()
-                # Só remover se não ficar muito curto
                 if len(content_words) > 3:
                     content_words = [w for w in content_words if w.lower() not in stopwords]
                     content = ' '.join(content_words)
 
-                if content and len(content) > 2:  # Conteúdo válido
+                if content and len(content) > 2:
                     details["content"] = content
-                    logger.debug(f"Conteúdo extraído: '{content}'")
+                    logger.debug(f"Conteúdo extraído da resposta do Gemini: '{content}'")
                     break
-                
-        # Extrair data/hora com padrões mais específicos
-        datetime_patterns = [
-            # Horário explícito
-            r'(?:às|as)\s*(\d{1,2}):?(\d{0,2})',
-            # Data e hora
-            r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\s*(?:às|as)?\s*(\d{1,2}):?(\d{0,2})?',
-            # Palavras temporais
-            r'\b(hoje|amanhã|depois\s+de\s+amanhã)\b',
-        ]
-
-        # Primeiro, tentar extrair horários específicos
-        time_match = re.search(r'(?:às|as)\s*(\d{1,2}):?(\d{0,2})', response_text, re.IGNORECASE)
-        date_indicators = re.findall(r'\b(hoje|amanhã|depois\s+de\s+amanhã)\b', response_text, re.IGNORECASE)
-
+        
+        # Extrair data/hora usando dateutil.parser diretamente na resposta do Gemini
+        parsed_dt = None
         try:
             now_local = datetime.now(self.target_timezone)
-            parsed_dt = None
+            
+            # Não aplicar _clean_text_for_parsing aqui, pois a resposta do Gemini
+            # pode ter formatos de data (ex: "7 de junho") que o parser pode entender
+            # e a limpeza do _clean_text_for_parsing (voltada para input do usuário) poderia interferir.
+            parsed_dt_naive, _ = dateutil_parser.parse(
+                response_text,
+                fuzzy_with_tokens=True, 
+                dayfirst=True,
+                default=now_local.replace(hour=9, minute=0, second=0, microsecond=0)
+            )
 
-            if time_match:
-                hour = int(time_match.group(1))
-                minute = int(time_match.group(2)) if time_match.group(2) else 0
+            if parsed_dt_naive.tzinfo is None:
+                parsed_dt = self.target_timezone.localize(parsed_dt_naive)
+            else:
+                parsed_dt = parsed_dt_naive.astimezone(self.target_timezone)
 
-                # Determinar o dia
-                if date_indicators:
-                    date_word = date_indicators[0].lower()
-                    if 'hoje' in date_word:
-                        parsed_dt = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                    elif 'amanhã' in date_word:
-                        parsed_dt = (now_local + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
-                    elif 'depois' in date_word:
-                        parsed_dt = (now_local + timedelta(days=2)).replace(hour=hour, minute=minute, second=0, microsecond=0)
-                else:
-                    # Se não há indicador de dia, assumir hoje se o horário ainda não passou
-                    parsed_dt = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                    if parsed_dt <= now_local:
-                        parsed_dt += timedelta(days=1)
-
-            if not parsed_dt:
-                # Tentar parsing mais genérico
-                cleaned_text = self._clean_text_for_parsing(response_text)
-                parsed_dt_naive, _ = dateutil_parser.parse(
-                    cleaned_text,
-                    fuzzy_with_tokens=True,
-                    dayfirst=True,
-                    default=now_local.replace(hour=9, minute=0, second=0)
-                )
-
-                if parsed_dt_naive.tzinfo is None:
-                    parsed_dt = self.target_timezone.localize(parsed_dt_naive)
-                else:
-                    parsed_dt = parsed_dt_naive.astimezone(self.target_timezone)
-
-            # Converter para UTC
             if parsed_dt:
                 details["datetime_obj"] = parsed_dt.astimezone(timezone.utc)
-                logger.debug(f"Data/hora extraída: {parsed_dt} (UTC: {details['datetime_obj']})")
+                logger.debug(f"Data/hora extraída da RESPOSTA DO GEMINI (via dateutil): {parsed_dt} (UTC: {details['datetime_obj']})")
 
-        except (ValueError, TypeError) as e:
-            logger.debug(f"Não foi possível extrair data/hora da resposta: {e}")
-
-        # Detectar recorrência
+        except (ValueError, TypeError, dateutil_parser.ParserError) as e:
+            logger.debug(f"Não foi possível extrair data/hora da resposta do Gemini ('{response_text}') com dateutil_parser: {e}. datetime_obj permanecerá None.")
+            # Se datetime_obj for None, a lógica em _process_pending_messages
+            # recorrerá a _extract_reminder_details_from_text(USER_INPUT) como fallback.
+        
+        # Detectar recorrência (lógica original mantida)
         for phrase, recurrence_type in self.RECURRENCE_KEYWORDS.items():
             if normalizar_texto(phrase) in normalizar_texto(response_text):
                 details["recurrence"] = recurrence_type
-                logger.debug(f"Recorrência detectada: {recurrence_type}")
+                logger.debug(f"Recorrência detectada na resposta do Gemini: {recurrence_type}")
                 break
             
         return details
